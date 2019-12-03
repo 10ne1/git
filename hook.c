@@ -47,24 +47,74 @@ const char *find_hook(struct repository *r, const char *name)
 	return path.buf;
 }
 
+struct hook_config_cb
+{
+	const char *hook_event;
+	struct string_list *list;
+};
+
+/*
+ * Callback for git_config which adds configured hooks to a hook list.  Hooks
+ * can be configured by specifying both hook.<friendly-name>.command = <path>
+ * and hook.<friendly-name>.event = <hook-event>.
+ */
+static int hook_config_lookup(const char *key, const char *value,
+			      const struct config_context *ctx UNUSED,
+			      void *cb_data)
+{
+	struct hook_config_cb *data = cb_data;
+	const char *name, *event_key;
+	size_t name_len = 0;
+	struct string_list_item *item;
+	char *hook_name;
+
+	/*
+	 * Don't bother doing the expensive parse if there's no
+	 * chance that the config matches 'hook.myhook.event = hook_event'.
+	 */
+	if (!value || strcmp(value, data->hook_event))
+		return 0;
+
+	/* Look for "hook.friendly-name.event = hook_event" */
+	if (parse_config_key(key, "hook", &name, &name_len, &event_key) ||
+	    strcmp(event_key, "event"))
+		return 0;
+
+	/* Extract the hook name */
+	hook_name = xmemdupz(name, name_len);
+
+	/* Remove the hook if already in the list, so we append in config order. */
+	if ((item = unsorted_string_list_lookup(data->list, hook_name)))
+		unsorted_string_list_delete_item(data->list, item - data->list->items, 0);
+
+	/* The list takes ownership of hook_name, so append with nodup */
+	string_list_append_nodup(data->list, hook_name);
+
+	return 0;
+}
+
 struct string_list *list_hooks(struct repository *r, const char *hookname)
 {
-	struct string_list *hook_head;
+	struct hook_config_cb cb_data;
 
 	if (!hookname)
 		BUG("null hookname was provided to hook_list()!");
 
-	hook_head = xmalloc(sizeof(struct string_list));
-	string_list_init_dup(hook_head);
+	cb_data.hook_event = hookname;
+	cb_data.list = xmalloc(sizeof(struct string_list));
+	string_list_init_dup(cb_data.list);
+
+	/* Add the hooks from the config, e.g. hook.myhook.event = pre-commit */
+	repo_config(r, hook_config_lookup, &cb_data);
 
 	/*
 	 * Add the default hook from hookdir. It does not have a friendly name
 	 * like the hooks specified via configs, so add it with an empty name.
 	 */
 	if (r->gitdir && find_hook(r, hookname))
-		string_list_append(hook_head, "");
+		string_list_append(cb_data.list, "");
 
-	return hook_head;
+	return cb_data.list;
 }
 
 int hook_exists(struct repository *r, const char *name)
@@ -125,6 +175,24 @@ static int pick_next_hook(struct child_process *cp,
 			hook_path = absolute_path(hook_path);
 
 		strvec_push(&cp->args, hook_path);
+	} else {
+		/* ...from config */
+		struct strbuf cmd_key = STRBUF_INIT;
+		char *command = NULL;
+
+		/* to enable oneliners, let config-specified hooks run in shell. */
+		cp->use_shell = true;
+
+		strbuf_addf(&cmd_key, "hook.%s.command", to_run->string);
+		if (repo_config_get_string(hook_cb->repository,
+					   cmd_key.buf, &command)) {
+			die(_("'hook.%s.command' must be configured or"
+			      "'hook.%s.event' must be removed; aborting.\n"),
+			    to_run->string, to_run->string);
+		}
+		strbuf_release(&cmd_key);
+
+		strvec_push_nodup(&cp->args, command);
 	}
 
 	if (!cp->args.nr)
