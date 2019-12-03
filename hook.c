@@ -130,18 +130,65 @@ int hook_exists(struct repository *r, const char *name)
 	return exists;
 }
 
+struct hook_config_cb
+{
+	const char *hook_event;
+	struct list_head *list;
+};
+
+/*
+ * Callback for git_config which adds configured hooks to a hook list.  Hooks
+ * can be configured by specifying both hook.<friend-name>.command = <path> and
+ * hook.<friendly-name>.event = <hook-event>.
+ */
+static int hook_config_lookup(const char *key, const char *value,
+			      const struct config_context *ctx UNUSED,
+			      void *cb_data)
+{
+	struct hook_config_cb *data = cb_data;
+	const char *name, *event_key;
+	size_t name_len = 0;
+
+	/*
+	 * Don't bother doing the expensive parse if there's no
+	 * chance that the config matches 'hook.myhook.event = hook_event'.
+	 */
+	if (!value || strcmp(value, data->hook_event))
+		return 0;
+
+	/* Looking for "hook.friendlyname.event = hook_event" */
+	if (parse_config_key(key, "hook", &name, &name_len, &event_key) ||
+	    strcmp(event_key, "event"))
+		return 0;
+
+	/*
+	 * Create a heap-allocated, null-terminated copy of the hook name
+	 * and pass ownership of it to append_or_move_hook().
+	 */
+	append_or_move_hook(data->list, xmemdupz(name, name_len));
+
+	return 0;
+}
+
 struct list_head *list_hooks(struct repository *r, const char *hookname)
 {
 	struct list_head *hook_head = xmalloc(sizeof(struct list_head));
+	struct hook_config_cb cb_data = {
+		.hook_event = hookname,
+		.list = hook_head,
+	};
 
 	INIT_LIST_HEAD(hook_head);
 
 	if (!hookname)
 		BUG("null hookname was provided to hook_list()!");
 
+	/* Add the hooks from the config, e.g. hook.myhook.event = pre-commit */
+	repo_config(r, hook_config_lookup, &cb_data);
+
 	/* Add the hook from the hookdir. The placeholder makes it easier to
 	 * allocate work in pick_next_hook. */
-	if (have_git_dir() && find_hook(r, hookname))
+	if (find_hook(r, hookname))
 		append_or_move_hook(hook_head, NULL);
 
 	return hook_head;
@@ -180,8 +227,30 @@ static int pick_next_hook(struct child_process *cp,
 	cp->trace2_hook_name = hook_cb->hook_name;
 	cp->dir = hook_cb->options->dir;
 
+	/*
+	 * to enable oneliners, let config-specified hooks run in shell.
+	 * config-specified hooks have a name.
+	 */
+	cp->use_shell = !!to_run->name;
+
 	/* add command */
-	if (!to_run->name) {
+	if (to_run->name) {
+		/* ...from config */
+		struct strbuf cmd_key = STRBUF_INIT;
+		char *command = NULL;
+
+		strbuf_addf(&cmd_key, "hook.%s.command", to_run->name);
+		if (repo_config_get_string(hook_cb->repository,
+					   cmd_key.buf, &command)) {
+			die(_("'hook.%s.command' must be configured "
+			      "or 'hook.%s.event' must be removed; aborting.\n"),
+			    to_run->name, to_run->name);
+		}
+
+		strvec_push(&cp->args, command);
+		free(command);
+		strbuf_release(&cmd_key);
+	} else {
 		/* ...from hookdir. */
 		const char *hook_path = find_hook(hook_cb->repository,
 						  hook_cb->hook_name);
