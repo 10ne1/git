@@ -15,3 +15,8 @@ hook.<name>.event::
 	On the specified event, the associated `hook.<name>.command` will be
 	executed. More than one event can be specified if you wish for
 	`hook.<name>` to execute on multiple events. See linkgit:git-hook[1].
+
+hook.jobs::
+	Specifies how many hooks can be run simultaneously during parallelized
+	hook execution. If unspecified, defaults to the number of processors on
+	the current system.

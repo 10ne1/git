@@ -287,6 +287,28 @@ test_expect_success 'stdin to multiple hooks' '
 	test_cmp expected actual
 '
 
+test_expect_success 'multiple hooks in series' '
+	test_config hook.series-1.event "test-hook" &&
+	test_config hook.series-1.command "echo 1" --add &&
+	test_config hook.series-2.event "test-hook" &&
+	test_config hook.series-2.command "echo 2" --add &&
+	mkdir .git/hooks &&
+	write_script .git/hooks/test-hook <<-EOF &&
+	echo 3
+	EOF
+
+	cat >expected <<-\EOF &&
+	1
+	2
+	3
+	EOF
+
+	git hook run -j1 test-hook 2>actual &&
+	test_cmp expected actual &&
+
+	rm .git/hooks/test-hook
+'
+
 test_expect_success 'rejects hooks with no commands configured' '
 	test_config hook.broken.event "test-hook" &&
 	echo broken >expected &&

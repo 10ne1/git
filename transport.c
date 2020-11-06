@@ -1379,7 +1379,7 @@ static void free_pre_push_hook_data(void *data)
 static int run_pre_push_hook(struct transport *transport,
 			     struct ref *remote_refs)
 {
-	struct run_hooks_opt opt = RUN_HOOKS_OPT_INIT;
+	struct run_hooks_opt opt = RUN_HOOKS_OPT_INIT_PARALLEL;
 	struct feed_pre_push_hook_data data;
 	int ret = 0;
 
