@@ -46,6 +46,13 @@ struct run_hooks_opt
 	unsigned int error_if_missing:1;
 
 	/**
+	 * Number of processes to parallelize across.
+	 * Set to 0 to use the 'hook.jobs' config or, if the config is unset,
+	 * the number of online cpus on the system.
+	 */
+	unsigned int jobs;
+
+	/**
 	 * An optional initial working directory for the hook,
 	 * translates to "struct child_process"'s "dir" member.
 	 */
@@ -127,7 +134,24 @@ struct run_hooks_opt
 	struct hook *run_me;
 };
 
-#define RUN_HOOKS_OPT_INIT { \
+/**
+ * Initializer for hooks capable of running only sequentially.
+ * .jobs = 1 forces serial execution. It cannot be overriden by users.
+ */
+#define RUN_HOOKS_OPT_INIT_SERIAL { \
+	.jobs = 1, \
+	.env = STRVEC_INIT, \
+	.args = STRVEC_INIT, \
+	.stdout_to_stderr = 1, \
+}
+
+/**
+ * Initializer for hooks capable of running in parallel.
+ * .jobs = 0 means online_cpus() will be called to get the number of jobs, if
+ * users did not specify a 'hook.jobs' config which has precedence.
+ */
+#define RUN_HOOKS_OPT_INIT_PARALLEL { \
+	.jobs = 0, \
 	.env = STRVEC_INIT, \
 	.args = STRVEC_INIT, \
 	.stdout_to_stderr = 1, \

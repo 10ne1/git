@@ -2492,7 +2492,7 @@ static void free_transaction_feed_cb_data(void *data)
 static int run_transaction_hook(struct ref_transaction *transaction,
 				const char *state)
 {
-	struct run_hooks_opt opt = RUN_HOOKS_OPT_INIT;
+	struct run_hooks_opt opt = RUN_HOOKS_OPT_INIT_PARALLEL;
 	struct hook hook_run_me = HOOK_INIT;
 	struct transaction_feed_cb_data feed_ctx = { 0 };
 	int ret = 0;

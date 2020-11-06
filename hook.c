@@ -259,6 +259,27 @@ static void run_hooks_opt_clear(struct run_hooks_opt *options)
 	strvec_clear(&options->args);
 }
 
+/*
+ * Determines how many jobs to use for hook execution.
+ * The priority is as follows:
+ *   1. 'struct run_hooks_opt.jobs' parameter is used directly if non-zero, e.g.
+ *      RUN_HOOKS_OPT_INIT_SERIAL forces jobs == 1 for serial execution of hooks
+ *      unsafe to parallelize, overriding any 'hook.jobs' user configuration.
+ *   2. The 'hook.jobs' configuration is used if set.
+ *   3. The number of online CPUs is used as a final fallback.
+ * Returns:
+ *   The number of jobs to use for parallel execution, or 1 for serial.
+ */
+static unsigned int get_hook_jobs(struct repository *r, struct run_hooks_opt *options)
+{
+	unsigned int jobs = options->jobs;
+
+	if (!jobs && repo_config_get_uint(r, "hook.jobs", &jobs))
+		jobs = online_cpus(); /* fallback if config is unset */
+
+	return jobs;
+}
+
 int run_hooks_opt(struct repository *r, const char *hook_name,
 		  struct run_hooks_opt *options)
 {
@@ -275,7 +296,7 @@ int run_hooks_opt(struct repository *r, const char *hook_name,
 		.tr2_category = "hook",
 		.tr2_label = hook_name,
 
-		.processes = 1,
+		.processes = get_hook_jobs(r, options),
 		.ungroup = options->ungroup,
 
 		.get_next_task = pick_next_hook,
@@ -335,7 +356,7 @@ cleanup:
 
 int run_hooks(struct repository *r, const char *hook_name)
 {
-	struct run_hooks_opt opt = RUN_HOOKS_OPT_INIT;
+	struct run_hooks_opt opt = RUN_HOOKS_OPT_INIT_PARALLEL;
 
 	/* All use-cases of this API require ungrouping. */
 	opt.ungroup = 1;
@@ -345,7 +366,7 @@ int run_hooks(struct repository *r, const char *hook_name)
 
 int run_hooks_l(struct repository *r, const char *hook_name, ...)
 {
-	struct run_hooks_opt opt = RUN_HOOKS_OPT_INIT;
+	struct run_hooks_opt opt = RUN_HOOKS_OPT_INIT_PARALLEL;
 	va_list ap;
 	const char *arg;
 
