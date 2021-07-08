@@ -47,9 +47,95 @@ const char *find_hook(struct repository *r, const char *name)
 	return path.buf;
 }
 
+/*
+ * Frees a struct hook stored as the util pointer of a string_list_item.
+ * Suitable for use as a string_list_clear_func_t callback.
+ */
+static void hook_free(void *p, const char *str UNUSED)
+{
+	struct hook *h = p;
+
+	if (!h)
+		return;
+
+	if (h->kind == HOOK_TRADITIONAL)
+		free((void *)h->u.traditional.path);
+
+	if (h->data_free)
+		h->data_free(h->feed_pipe_cb_data);
+
+	free(h);
+}
+
+/* Helper to detect and add default "traditional" hooks from the hookdir. */
+static void list_hooks_add_default(struct repository *r, const char *hookname,
+				   struct string_list *hook_list,
+				   struct run_hooks_opt *options)
+{
+	const char *hook_path = find_hook(r, hookname);
+	struct hook *h;
+
+	if (!hook_path)
+		return;
+
+	CALLOC_ARRAY(h, 1);
+
+	/*
+	 * If the hook is to run in a specific dir, a relative path can
+	 * become invalid in that dir, so convert to an absolute path.
+	 */
+	if (options && options->dir)
+		hook_path = absolute_path(hook_path);
+
+	/* Setup per-hook internal state cb data */
+	if (options && options->feed_pipe_cb_data_alloc)
+		h->feed_pipe_cb_data = options->feed_pipe_cb_data_alloc(options->feed_pipe_ctx);
+	if (options)
+		h->data_free = options->feed_pipe_cb_data_free;
+
+	h->kind = HOOK_TRADITIONAL;
+	h->u.traditional.path = xstrdup(hook_path);
+
+	string_list_append(hook_list, hook_path)->util = h;
+}
+
+/*
+ * Provides a list of hook commands to run for the 'hookname' event.
+ *
+ * This function consolidates hooks from two sources:
+ * 1. The config-based hooks (not yet implemented).
+ * 2. The "traditional" hook found in the repository hooks directory
+ *    (e.g., .git/hooks/pre-commit).
+ *
+ * The list is ordered by execution priority.
+ *
+ * The caller is responsible for freeing the memory of the returned list
+ * using string_list_clear() and free().
+ */
+static struct string_list *list_hooks(struct repository *r, const char *hookname,
+			       struct run_hooks_opt *options)
+{
+	struct string_list *hook_head;
+
+	if (!hookname)
+		BUG("null hookname was provided to hook_list()!");
+
+	CALLOC_ARRAY(hook_head, 1);
+	string_list_init_dup(hook_head);
+
+	/* Add the default "traditional" hooks from hookdir. */
+	list_hooks_add_default(r, hookname, hook_head, options);
+
+	return hook_head;
+}
+
 int hook_exists(struct repository *r, const char *name)
 {
-	return !!find_hook(r, name);
+	struct string_list *hooks = list_hooks(r, name, NULL);
+	int exists = hooks->nr > 0;
+	string_list_clear_func(hooks, hook_free);
+	free(hooks);
+	return exists;
 }
 
 static int pick_next_hook(struct child_process *cp,
@@ -58,10 +144,13 @@ static int pick_next_hook(struct child_process *cp,
 			  void **pp_task_cb)
 {
 	struct hook_cb_data *hook_cb = pp_cb;
-	const char *hook_path = hook_cb->hook_path;
+	struct string_list *hook_list = hook_cb->hook_command_list;
+	struct hook *h;
 
-	if (!hook_path)
+	if (hook_cb->hook_to_run_index >= hook_list->nr)
 		return 0;
+
+	h = hook_list->items[hook_cb->hook_to_run_index++].util;
 
 	cp->no_stdin = 1;
 	strvec_pushv(&cp->env, hook_cb->options->env.v);
@@ -85,21 +174,22 @@ static int pick_next_hook(struct child_process *cp,
 	cp->trace2_hook_name = hook_cb->hook_name;
 	cp->dir = hook_cb->options->dir;
 
-	strvec_push(&cp->args, hook_path);
+	/* Add hook exec paths or commands */
+	if (h->kind == HOOK_TRADITIONAL)
+		strvec_push(&cp->args, h->u.traditional.path);
+	else
+		BUG("unknown hook kind");
+
+	if (!cp->args.nr)
+		BUG("hook must have at least one command or exec path");
+
 	strvec_pushv(&cp->args, hook_cb->options->args.v);
 
 	/*
 	 * Provide per-hook internal state via task_cb for easy access, so
 	 * hook callbacks don't have to go through hook_cb->options.
 	 */
-	*pp_task_cb = hook_cb->options->feed_pipe_cb_data;
-
-	/*
-	 * This pick_next_hook() will be called again, we're only
-	 * running one hook, so indicate that no more work will be
-	 * done.
-	 */
-	hook_cb->hook_path = NULL;
+	*pp_task_cb = h->feed_pipe_cb_data;
 
 	return 1;
 }
@@ -133,8 +223,6 @@ static int notify_hook_finished(int result,
 
 static void run_hooks_opt_clear(struct run_hooks_opt *options)
 {
-	if (options->feed_pipe_cb_data_free)
-		options->feed_pipe_cb_data_free(options->feed_pipe_cb_data);
 	strvec_clear(&options->env);
 	strvec_clear(&options->args);
 }
@@ -142,13 +230,11 @@ static void run_hooks_opt_clear(struct run_hooks_opt *options)
 int run_hooks_opt(struct repository *r, const char *hook_name,
 		  struct run_hooks_opt *options)
 {
-	struct strbuf abs_path = STRBUF_INIT;
 	struct hook_cb_data cb_data = {
 		.rc = 0,
 		.hook_name = hook_name,
 		.options = options,
 	};
-	const char *const hook_path = find_hook(r, hook_name);
 	int ret = 0;
 	const struct run_process_parallel_opts opts = {
 		.tr2_category = "hook",
@@ -181,30 +267,21 @@ int run_hooks_opt(struct repository *r, const char *hook_name,
 	if (!options->feed_pipe_cb_data_alloc != !options->feed_pipe_cb_data_free)
 		BUG("feed_pipe_cb_data_alloc and feed_pipe_cb_data_free must be set together");
 
-	if (options->feed_pipe_cb_data_alloc)
-		options->feed_pipe_cb_data = options->feed_pipe_cb_data_alloc(options->feed_pipe_ctx);
-
 	if (options->invoked_hook)
 		*options->invoked_hook = 0;
 
-	if (!hook_path && !options->error_if_missing)
+	cb_data.hook_command_list = list_hooks(r, hook_name, options);
+	if (!cb_data.hook_command_list->nr) {
+		if (options->error_if_missing)
+			ret = error("cannot find a hook named %s", hook_name);
 		goto cleanup;
-
-	if (!hook_path) {
-		ret = error("cannot find a hook named %s", hook_name);
-		goto cleanup;
-	}
-
-	cb_data.hook_path = hook_path;
-	if (options->dir) {
-		strbuf_add_absolute_path(&abs_path, hook_path);
-		cb_data.hook_path = abs_path.buf;
 	}
 
 	run_processes_parallel(&opts);
 	ret = cb_data.rc;
 cleanup:
-	strbuf_release(&abs_path);
+	string_list_clear_func(cb_data.hook_command_list, hook_free);
+	free(cb_data.hook_command_list);
 	run_hooks_opt_clear(options);
 	return ret;
 }

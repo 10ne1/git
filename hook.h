@@ -2,11 +2,51 @@
 #define HOOK_H
 #include "strvec.h"
 #include "run-command.h"
+#include "string-list.h"
 
 struct repository;
 
 typedef void (*hook_data_free_fn)(void *data);
 typedef void *(*hook_data_alloc_fn)(void *init_ctx);
+
+/**
+ * Represents a hook command to be run.
+ * Hooks can be:
+ * 1. "traditional" (found in the hooks directory)
+ * 2. "configured" (defined in Git's configuration, not yet implemented).
+ * The 'kind' field determines which part of the union 'u' is valid.
+ */
+struct hook {
+	enum {
+		HOOK_TRADITIONAL,
+	} kind;
+	union {
+		struct {
+			const char *path;
+		} traditional;
+	} u;
+
+	/**
+	 * Opaque data pointer used to keep internal state across callback calls.
+	 *
+	 * It can be accessed directly via the third hook callback arg:
+	 * struct ... *state = pp_task_cb;
+	 *
+	 * The caller is responsible for managing the memory for this data by
+	 * providing alloc/free callbacks to `run_hooks_opt`.
+	 *
+	 * Only useful when using `run_hooks_opt.feed_pipe`, otherwise ignore it.
+	 */
+	void *feed_pipe_cb_data;
+
+	/**
+	 * Callback to free `feed_pipe_cb_data`.
+	 *
+	 * It is called automatically and points to the `feed_pipe_cb_data_free`
+	 * provided via the `run_hook_opt` parameter.
+	 */
+	hook_data_free_fn data_free;
+};
 
 struct run_hooks_opt
 {
@@ -86,19 +126,6 @@ struct run_hooks_opt
 	void *feed_pipe_ctx;
 
 	/**
-	 * Opaque data pointer used to keep internal state across callback calls.
-	 *
-	 * It can be accessed directly via the third callback arg 'pp_task_cb':
-	 * struct ... *state = pp_task_cb;
-	 *
-	 * The caller is responsible for managing the memory for this data by
-	 * providing alloc/free callbacks to `run_hooks_opt`.
-	 *
-	 * Only useful when using `run_hooks_opt.feed_pipe`, otherwise ignore it.
-	 */
-	void *feed_pipe_cb_data;
-
-	/**
 	 * Some hooks need to create a fresh `feed_pipe_cb_data` internal state,
 	 * so they can keep track of progress without affecting one another.
 	 *
@@ -132,11 +159,23 @@ struct hook_cb_data {
 	/* rc reflects the cumulative failure state */
 	int rc;
 	const char *hook_name;
-	const char *hook_path;
+
+	/**
+	 * A list of hook commands/paths to run for the 'hook_name' event.
+	 *
+	 * The 'string' member of each item holds the path (for traditional hooks)
+	 * or the unique friendly-name for hooks specified in configs.
+	 * The 'util' member of each item points to the corresponding struct hook.
+	 */
+	struct string_list *hook_command_list;
+
+	/* Iterator/cursor for the above list, pointing to the next hook to run. */
+	size_t hook_to_run_index;
+
 	struct run_hooks_opt *options;
 };
 
-/*
+/**
  * Returns the path to the hook file, or NULL if the hook is missing
  * or disabled. Note that this points to static storage that will be
  * overwritten by further calls to find_hook and run_hook_*.
