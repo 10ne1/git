@@ -807,7 +807,8 @@ struct receive_hook_feed_state {
 
 static int feed_receive_hook_cb(int hook_stdin_fd, void *pp_cb UNUSED, void *pp_task_cb)
 {
-	struct receive_hook_feed_state *state = pp_task_cb;
+	struct string_list_item *h = pp_task_cb;
+	struct receive_hook_feed_state *state = h->util;
 	struct command *cmd = state->cmd;
 	unsigned int lines_batch_size = 500;
 
@@ -873,6 +874,24 @@ static void hook_output_to_sideband(struct strbuf *output, void *cb_data UNUSED)
 		send_sideband(1, 2, output->buf, output->len, use_sideband);
 }
 
+static void *copy_receive_hook_feed_state(const void *data)
+{
+	const struct receive_hook_feed_state *orig = data;
+	struct receive_hook_feed_state *new_data = xmalloc(sizeof(*new_data));
+	memcpy(new_data, orig, sizeof(*new_data));
+	strbuf_init(&new_data->buf, 0);
+	return new_data;
+}
+
+static void free_receive_hook_feed_state(void *data)
+{
+	struct receive_hook_feed_state *d = data;
+	if (!d)
+		return;
+	strbuf_release(&d->buf);
+	free(d);
+}
+
 static int run_receive_hook(struct command *commands,
 			    const char *hook_name,
 			    int skip_broken,
@@ -908,13 +927,17 @@ static int run_receive_hook(struct command *commands,
 	if (use_sideband)
 		opt.consume_output = hook_output_to_sideband;
 
-	/* set up stdin callback */
+	/* set up callback state */
 	feed_state.cmd = commands;
 	feed_state.skip_broken = skip_broken;
 	feed_state.report = NULL;
 	strbuf_init(&feed_state.buf, 0);
+
+	/* set up stdin callback */
 	opt.feed_pipe_cb_data = &feed_state;
 	opt.feed_pipe = feed_receive_hook_cb;
+	opt.copy_feed_pipe_cb_data = copy_receive_hook_feed_state;
+	opt.free_feed_pipe_cb_data = free_receive_hook_feed_state;
 
 	ret = run_hooks_opt(the_repository, hook_name, &opt);
 

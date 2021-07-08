@@ -2,8 +2,37 @@
 #define HOOK_H
 #include "strvec.h"
 #include "run-command.h"
+#include "list.h"
+
+struct hook {
+	struct list_head list;
+	/*
+	 * The friendly name of the hook. NULL indicates the hook is from the
+	 * hookdir.
+	 */
+	char *name;
+
+	/**
+	 * Opaque data pointer used to keep internal state across callback calls.
+	 *
+	 * It can be accessed directly via the third callback arg 'pp_task_cb':
+	 * struct ... *state = pp_task_cb;
+	 *
+	 * The caller is responsible for managing the memory for this data.
+	 * Only useful when using `run_hooks_opt.feed_pipe`, otherwise ignore it.
+	 */
+	void *feed_pipe_cb_data;
+};
+
+#define HOOK_INIT { 0 }
 
 struct repository;
+
+/*
+ * Provides a linked list of 'struct hook' detailing commands which should run
+ * in response to the 'hookname' event, in execution order.
+ */
+struct list_head *list_hooks(struct repository *r, const char *hookname);
 
 struct run_hooks_opt
 {
@@ -75,17 +104,6 @@ struct run_hooks_opt
 	 */
 	void *feed_pipe_ctx;
 
-	/**
-	 * Opaque data pointer used to keep internal state across callback calls.
-	 *
-	 * It can be accessed directly via the third callback arg 'pp_task_cb':
-	 * struct ... *state = pp_task_cb;
-	 *
-	 * The caller is responsible for managing the memory for this data.
-	 * Only useful when using `run_hooks_opt.feed_pipe`, otherwise ignore it.
-	 */
-	void *feed_pipe_cb_data;
-
 	/*
 	 * Populate this to capture output and prevent it from being printed to
 	 * stderr. This will be passed directly through to
@@ -93,6 +111,20 @@ struct run_hooks_opt
 	 * for an example.
 	 */
 	consume_output_fn consume_output;
+
+	/**
+	 * If the hook needs per-instance data, this function will be called to
+	 * copy the `feed_pipe_cb_data` for each hook.
+	 */
+	void *(*copy_feed_pipe_cb_data)(const void *data);
+
+	/**
+	 * If `copy_feed_pipe_cb_data` is set, this function will be called to
+	 * free the copied data.
+	 */
+	void (*free_feed_pipe_cb_data)(void *data);
+
+	struct hook *run_me;
 };
 
 #define RUN_HOOKS_OPT_INIT { \
@@ -105,8 +137,9 @@ struct hook_cb_data {
 	/* rc reflects the cumulative failure state */
 	int rc;
 	const char *hook_name;
-	const char *hook_path;
+	struct list_head *head;
 	struct run_hooks_opt *options;
+	struct repository *repository;
 };
 
 /*
@@ -148,4 +181,10 @@ int run_hooks(struct repository *r, const char *hook_name);
  */
 LAST_ARG_MUST_BE_NULL
 int run_hooks_l(struct repository *r, const char *hook_name, ...);
+/*
+ * Frees the list at 'head', calling 'free_hook()' on each entry and freeing the
+ * list_head struct
+ */
+void clear_hook_list(struct list_head *head);
+
 #endif

@@ -1323,7 +1323,8 @@ struct feed_pre_push_hook_data {
 
 static int pre_push_hook_feed_stdin(int hook_stdin_fd, void *pp_cb UNUSED, void *pp_task_cb)
 {
-	struct feed_pre_push_hook_data *data = pp_task_cb;
+	struct hook *h = pp_task_cb;
+	struct feed_pre_push_hook_data *data = h->feed_pipe_cb_data;
 	const struct ref *r = data->refs;
 	int ret = 0;
 
@@ -1357,11 +1358,30 @@ static int pre_push_hook_feed_stdin(int hook_stdin_fd, void *pp_cb UNUSED, void 
 	return 0;
 }
 
+static void *copy_pre_push_hook_data(const void *data)
+{
+	const struct feed_pre_push_hook_data *orig = data;
+	struct feed_pre_push_hook_data *new_data = xmalloc(sizeof(*new_data));
+	strbuf_init(&new_data->buf, 0);
+	new_data->refs = orig->refs;
+	return new_data;
+}
+
+static void free_pre_push_hook_data(void *data)
+{
+	struct feed_pre_push_hook_data *d = data;
+	if (!d)
+		return;
+	strbuf_release(&d->buf);
+	free(d);
+}
+
 static int run_pre_push_hook(struct transport *transport,
 			     struct ref *remote_refs)
 {
 	struct run_hooks_opt opt = RUN_HOOKS_OPT_INIT;
 	struct feed_pre_push_hook_data data;
+	struct hook hook_run_me = HOOK_INIT;
 	int ret = 0;
 
 	strvec_push(&opt.args, transport->remote->name);
@@ -1370,9 +1390,12 @@ static int run_pre_push_hook(struct transport *transport,
 	strbuf_init(&data.buf, 0);
 	data.refs = remote_refs;
 
-	opt.feed_pipe = pre_push_hook_feed_stdin;
-	opt.feed_pipe_cb_data = &data;
 	opt.stdout_to_stderr = 0;
+	opt.feed_pipe = pre_push_hook_feed_stdin;
+	hook_run_me.feed_pipe_cb_data = &data;
+	opt.run_me = &hook_run_me;
+	opt.copy_feed_pipe_cb_data = copy_pre_push_hook_data;
+	opt.free_feed_pipe_cb_data = free_pre_push_hook_data;
 
 	ret = run_hooks_opt(the_repository, "pre-push", &opt);
 
