@@ -47,11 +47,7 @@ const char *find_hook(struct repository *r, const char *name)
 	return path.buf;
 }
 
-/*
- * Frees a struct hook stored as the util pointer of a string_list_item.
- * Suitable for use as a string_list_clear_func_t callback.
- */
-static void hook_free(void *p, const char *str UNUSED)
+void hook_free(void *p, const char *str UNUSED)
 {
 	struct hook *h = p;
 
@@ -99,20 +95,7 @@ static void list_hooks_add_default(struct repository *r, const char *hookname,
 	string_list_append(hook_list, hook_path)->util = h;
 }
 
-/*
- * Provides a list of hook commands to run for the 'hookname' event.
- *
- * This function consolidates hooks from two sources:
- * 1. The config-based hooks (not yet implemented).
- * 2. The "traditional" hook found in the repository hooks directory
- *    (e.g., .git/hooks/pre-commit).
- *
- * The list is ordered by execution priority.
- *
- * The caller is responsible for freeing the memory of the returned list
- * using string_list_clear() and free().
- */
-static struct string_list *list_hooks(struct repository *r, const char *hookname,
+struct string_list *list_hooks(struct repository *r, const char *hookname,
 			       struct run_hooks_opt *options)
 {
 	struct string_list *hook_head;
