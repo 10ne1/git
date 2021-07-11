@@ -52,10 +52,6 @@ const char *find_hook(struct repository *r, const char *name)
 	return path.buf;
 }
 
-/*
- * Frees a struct hook stored as the util pointer of a string_list_item.
- * Suitable for use as a string_list_clear_func_t callback.
- */
 void hook_free(void *p, const char *str UNUSED)
 {
 	struct hook *h = p;
