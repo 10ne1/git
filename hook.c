@@ -289,7 +289,7 @@ static struct strmap *get_hook_config_cache(struct repository *r)
 		 * Out-of-repo calls (no gitdir) allocate and return a temporary
 		 * map cache which gets free'd immediately by the caller.
 		 */
-		cache = xcalloc(1, sizeof(*cache));
+		CALLOC_ARRAY(cache, 1);
 		strmap_init(cache);
 		build_hook_config_map(r, cache);
 	}
