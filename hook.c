@@ -135,7 +135,7 @@ int run_hooks_opt(struct repository *r, const char *hook_name,
 	};
 	const char *const hook_path = find_hook(r, hook_name);
 	int ret = 0;
-	const struct run_process_parallel_opts opts = {
+	struct run_process_parallel_opts opts = {
 		.tr2_category = "hook",
 		.tr2_label = hook_name,
 

@@ -437,6 +437,20 @@ typedef int (*feed_pipe_fn)(int child_in,
 				void *pp_task_cb);
 
 /**
+ * If this callback is provided, instead of collating process output to stderr,
+ * they will be collated into a new pipe. consume_sideband_fn will be called
+ * repeatedly. When output is available on that pipe, it will be contained in
+ * 'output'. But it will be called with an empty 'output' too, to allow for
+ * keepalives or similar operations if necessary.
+ *
+ * pp_cb is the callback cookie as passed into run_processes_parallel.
+ *
+ * Since this callback is provided with the collated output, no task cookie is
+ * provided.
+ */
+typedef void (*consume_sideband_fn)(struct strbuf *output, void *pp_cb);
+
+/**
  * This callback is called on every child process that finished processing.
  *
  * See run_processes_parallel() below for a discussion of the "struct
@@ -495,6 +509,12 @@ struct run_process_parallel_opts
 	 */
 	feed_pipe_fn feed_pipe;
 
+	/*
+	 * consume_sideband: see consume_sideband_fn() above. This can be NULL
+	 * to omit any special handling.
+	 */
+	consume_sideband_fn consume_sideband;
+
 	/**
 	 * task_finished: See task_finished_fn() above. This can be
 	 * NULL to omit any special handling.
@@ -529,7 +549,7 @@ struct run_process_parallel_opts
  * emitting their own output, including dealing with any race
  * conditions due to writing in parallel to stdout and stderr.
  */
-void run_processes_parallel(const struct run_process_parallel_opts *opts);
+void run_processes_parallel(struct run_process_parallel_opts *opts);
 
 /**
  * Convenience function which prepares env for a command to be run in a

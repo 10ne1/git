@@ -1821,7 +1821,7 @@ int fetch_submodules(struct repository *r,
 {
 	int i;
 	struct submodule_parallel_fetch spf = SPF_INIT;
-	const struct run_process_parallel_opts opts = {
+	struct run_process_parallel_opts opts = {
 		.tr2_category = "submodule",
 		.tr2_label = "parallel/fetch",
 
