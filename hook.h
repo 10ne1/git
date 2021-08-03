@@ -1,6 +1,7 @@
 #ifndef HOOK_H
 #define HOOK_H
 #include "strvec.h"
+#include "run-command.h"
 
 struct repository;
 
@@ -37,6 +38,24 @@ struct run_hooks_opt
 	 * Path to file which should be piped to stdin for each hook.
 	 */
 	const char *path_to_stdin;
+
+	/**
+	 * Callback to ask for more content to pipe to each hook stdin.
+	 *
+	 * If a hook needs to consume large quantities of data (e.g. a list of all refs received in a
+	 * client push), feeding data via in-memory strings or slurping to/from files via path_to_stdin
+	 * will not be efficient, so this callback allows for piecemeal reading and writing.
+	 *
+	 * Add initalization context to hook.feed_pipe_ctx.
+	 */
+	feed_pipe_fn feed_pipe;
+	void *feed_pipe_ctx;
+
+	/**
+	 * Use this to keep internal state for your feed_pipe_fn callback.
+	 * Only useful if you are using run_hooks_opt.feed_pipe. Otherwise, ignore it.
+	 */
+	void *feed_pipe_cb_data;
 };
 
 #define RUN_HOOKS_OPT_INIT { \
@@ -44,6 +63,9 @@ struct run_hooks_opt
 	.args = STRVEC_INIT, \
 }
 
+/**
+ * Callback data provided to feed_pipe_fn.
+ */
 struct hook_cb_data {
 	/* rc reflects the cumulative failure state */
 	int rc;

@@ -69,6 +69,10 @@ static int pick_next_hook(struct child_process *cp,
 	if (hook_cb->options->path_to_stdin) {
 		cp->no_stdin = 0;
 		cp->in = xopen(hook_cb->options->path_to_stdin, O_RDONLY);
+	} else if (hook_cb->options->feed_pipe) {
+		cp->no_stdin = 0;
+		/* start_command() will allocate a pipe / stdin fd for us */
+		cp->in = -1;
 	}
 	cp->stdout_to_stderr = 1;
 	cp->trace2_hook_name = hook_cb->hook_name;
@@ -140,6 +144,7 @@ int run_hooks_opt(struct repository *r, const char *hook_name,
 
 		.get_next_task = pick_next_hook,
 		.start_failure = notify_start_failure,
+		.feed_pipe = options->feed_pipe,
 		.task_finished = notify_hook_finished,
 
 		.data = &cb_data,
@@ -147,6 +152,9 @@ int run_hooks_opt(struct repository *r, const char *hook_name,
 
 	if (!options)
 		BUG("a struct run_hooks_opt must be provided to run_hooks");
+
+	if (options->path_to_stdin && options->feed_pipe)
+		BUG("choose only one method to populate hook stdin");
 
 	if (options->invoked_hook)
 		*options->invoked_hook = 0;
