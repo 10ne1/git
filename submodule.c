@@ -31,6 +31,7 @@
 #include "commit-reach.h"
 #include "read-cache-ll.h"
 #include "setup.h"
+#include "url.h"
 
 static int config_update_recurse_submodules = RECURSE_SUBMODULES_OFF;
 static int initialized_fetch_ref_tips;
@@ -2256,16 +2257,35 @@ out:
 	return ret;
 }
 
+static int gitdir_error(const char *fmt, ...)
+{
+	int ret = -1;
+
+	/*
+	 * print the error only when extensions.submoduleEncoding is disabled, because the
+	 * extension adresses/mitigates these failures. See submodule_name_to_gitdir().
+	 */
+	if (!the_repository->repository_format_submodule_encoding) {
+		va_list args;
+		va_start(args, fmt);
+		ret = error(fmt, args);
+		va_end(args);
+	}
+
+	return ret;
+}
+
 int validate_submodule_git_dir(char *git_dir, const char *submodule_name)
 {
 	size_t len = strlen(git_dir), suffix_len = strlen(submodule_name);
-	char *p;
+	char *p = git_dir + len - suffix_len;
+	bool suffixes_match = !strcmp(p, submodule_name);
 	int ret = 0;
 
-	if (len <= suffix_len || (p = git_dir + len - suffix_len)[-1] != '/' ||
-	    strcmp(p, submodule_name))
-		BUG("submodule name '%s' not a suffix of git dir '%s'",
-		    submodule_name, git_dir);
+	/* Prevent the use of '/' when extensions.submoduleEncoding is enabled. */
+	if (the_repository->repository_format_submodule_encoding && strchr(p, '/'))
+		return gitdir_error(_("submodule git dir '%s' contains unexpected '/'"),
+				    git_dir);
 
 	/*
 	 * We prevent the contents of sibling submodules' git directories to
@@ -2277,7 +2297,7 @@ int validate_submodule_git_dir(char *git_dir, const char *submodule_name)
 	 * but the latter directory is already designated to contain the hooks
 	 * of the former.
 	 */
-	for (; *p; p++) {
+	for (; *p && suffixes_match; p++) {
 		if (is_dir_sep(*p)) {
 			char c = *p;
 
@@ -2287,10 +2307,8 @@ int validate_submodule_git_dir(char *git_dir, const char *submodule_name)
 			*p = c;
 
 			if (ret < 0)
-				return error(_("submodule git dir '%s' is "
-					       "inside git dir '%.*s'"),
-					     git_dir,
-					     (int)(p - git_dir), git_dir);
+				return gitdir_error(_("submodule git dir '%s' is inside git dir '%.*s'"),
+						    git_dir, (int)(p - git_dir), git_dir);
 		}
 	}
 
@@ -2581,29 +2599,63 @@ cleanup:
 	return ret;
 }
 
+static int validate_and_set_submodule_gitdir(struct strbuf *gitdir_path,
+					     const char *submodule_name)
+{
+	char *key;
+
+	if (validate_submodule_git_dir(gitdir_path->buf, submodule_name))
+		return -1;
+
+	key = xstrfmt("submodule.%s.gitdir", submodule_name);
+	repo_config_set_gently(the_repository, key, gitdir_path->buf);
+	FREE_AND_NULL(key);
+
+	return 0;
+
+}
+
 void submodule_name_to_gitdir(struct strbuf *buf, struct repository *r,
 			      const char *submodule_name)
 {
-	/*
-	 * NEEDSWORK: The current way of mapping a submodule's name to
-	 * its location in .git/modules/ has problems with some naming
-	 * schemes. For example, if a submodule is named "foo" and
-	 * another is named "foo/bar" (whether present in the same
-	 * superproject commit or not - the problem will arise if both
-	 * superproject commits have been checked out at any point in
-	 * time), or if two submodule names only have different cases in
-	 * a case-insensitive filesystem.
-	 *
-	 * There are several solutions, including encoding the path in
-	 * some way, introducing a submodule.<name>.gitdir config in
-	 * .git/config (not .gitmodules) that allows overriding what the
-	 * gitdir of a submodule would be (and teach Git, upon noticing
-	 * a clash, to automatically determine a non-clashing name and
-	 * to write such a config), or introducing a
-	 * submodule.<name>.gitdir config in .gitmodules that repo
-	 * administrators can explicitly set. Nothing has been decided,
-	 * so for now, just append the name at the end of the path.
-	 */
+	const char *gitdir;
+	char *key;
+
 	repo_git_path_append(r, buf, "modules/");
 	strbuf_addstr(buf, submodule_name);
+
+	/* If extensions.submoduleEncoding is disabled, use the plain path set above */
+	if (!r->repository_format_submodule_encoding)
+		return;
+
+	/* Extension is enabled: use the gitdir config if it exists */
+	key = xstrfmt("submodule.%s.gitdir", submodule_name);
+	if (!repo_config_get_string_tmp(r, key, &gitdir)) {
+		strbuf_reset(buf);
+		strbuf_addstr(buf, gitdir);
+		FREE_AND_NULL(key);
+		return;
+	}
+	FREE_AND_NULL(key);
+
+	/*
+	 * The gitdir config does not exist, even though the extension is enabled.
+	 * Therefore we are in one of the following cases:
+	 */
+
+	/* Case 1: legacy migration of valid plain submodule names */
+	if (!validate_and_set_submodule_gitdir(buf, submodule_name))
+		return;
+
+	/* Case 2: Try URI-safe (RFC3986) encoding first, this fixes nested gitdirs */
+	strbuf_reset(buf);
+	repo_git_path_append(r, buf, "modules/");
+	strbuf_addstr_urlencode(buf, submodule_name, is_rfc3986_unreserved);
+	if (!validate_and_set_submodule_gitdir(buf, submodule_name))
+		return;
+
+	/* Case 3: error out */
+	die(_("Cannot construct a valid gitdir path for submodule '%s': "
+	      "please set a unique git config for 'submodule.%s.gitdir'."),
+	    submodule_name, submodule_name);
 }
