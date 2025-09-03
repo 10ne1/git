@@ -2626,12 +2626,28 @@ void submodule_name_to_gitdir(struct strbuf *buf, struct repository *r,
 	/* important: check top-level repo config for encoding extension, not the submodule repo */
 	if (the_repository->repository_format_submodule_encoding) {
 		struct strbuf tmp = STRBUF_INIT;
+		size_t base_len;
+		long name_max;
 
 		strbuf_reset(buf);
 		repo_git_path_append(r, buf, "modules/");
+		base_len = buf->len;
 
 		strbuf_addstr_urlencode(&tmp, submodule_name, is_rfc3986_unreserved);
 		strbuf_addstr_case_encode(buf, tmp.buf);
+
+		/* Ensure final path length is below NAME_MAX after encoding */
+		name_max = pathconf(buf->buf, _PC_NAME_MAX);
+		if (name_max == -1)
+			name_max = NAME_MAX;
+
+		if (buf->len - base_len > name_max)
+			/*
+			 * TODO: make this smarter; instead of erroring out, maybe we could trim or
+			 * shard the gitdir names to make them fit under NAME_MAX.
+			 */
+			die(_("submodule name %s is too long (%"PRIuMAX" bytes, limit %"PRIuMAX")"),
+			    buf->buf, (uintmax_t)buf->len - base_len, (uintmax_t)name_max);
 
 		strbuf_release(&tmp);
 	}

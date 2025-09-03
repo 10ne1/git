@@ -143,4 +143,20 @@ test_expect_success 'submodule git dir nesting detection must work with parallel
 	verify_submodule_gitdir_path clone_parallel hippo/hooks modules/hippo%2fhooks
 '
 
+test_expect_success 'submodule encoded name exceeds max name limit' '
+	(
+		cd main &&
+
+		# find the system NAME_MAX (fall back to 255 if unknown)
+		name_max=$(getconf NAME_MAX . 2>/dev/null || echo 255) &&
+
+		# each "%" char encodes to "%25" (3 chars), ensure we exceed NAME_MAX
+		count=$((name_max + 10)) &&
+		longname=$(test_seq -f "%%%0.s" 1 $count | tr -d "\n") &&
+
+		test_must_fail git submodule add ../new-sub "$longname" 2>err &&
+		test_grep "fatal: submodule name .* is too long" err
+	)
+'
+
 test_done
