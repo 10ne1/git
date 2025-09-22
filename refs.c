@@ -2377,31 +2377,16 @@ static int ref_update_reject_duplicates(struct string_list *refnames,
 	return 0;
 }
 
-static int run_transaction_hook(struct ref_transaction *transaction,
-				const char *state)
+static int transaction_hook_feed_stdin(int hook_stdin_fd, void *pp_cb, void *pp_task_cb UNUSED)
 {
-	struct child_process proc = CHILD_PROCESS_INIT;
+	struct hook_cb_data *hook_cb = pp_cb;
+	struct run_hooks_opt *opt = hook_cb->options;
+	struct ref_transaction *transaction = opt->feed_pipe_ctx;
 	struct strbuf buf = STRBUF_INIT;
-	const char *hook;
-	int ret = 0, i;
 
-	hook = find_hook(transaction->ref_store->repo, "reference-transaction");
-	if (!hook)
-		return ret;
-
-	strvec_pushl(&proc.args, hook, state, NULL);
-	proc.in = -1;
-	proc.stdout_to_stderr = 1;
-	proc.trace2_hook_name = "reference-transaction";
-
-	ret = start_command(&proc);
-	if (ret)
-		return ret;
-
-	sigchain_push(SIGPIPE, SIG_IGN);
-
-	for (i = 0; i < transaction->nr; i++) {
+	for (int i = 0; i < transaction->nr; i++) {
 		struct ref_update *update = transaction->updates[i];
+		int ret;
 
 		if (update->flags & REF_LOG_ONLY)
 			continue;
@@ -2424,22 +2409,34 @@ static int run_transaction_hook(struct ref_transaction *transaction,
 
 		strbuf_addf(&buf, "%s\n", update->refname);
 
-		if (write_in_full(proc.in, buf.buf, buf.len) < 0) {
-			if (errno != EPIPE) {
-				/* Don't leak errno outside this API */
-				errno = 0;
-				ret = -1;
-			}
-			break;
+		ret = write_in_full(hook_stdin_fd, buf.buf, buf.len);
+		if (ret < 0) {
+			if (errno == EPIPE)
+				ret = 1; /* child hook closed stdin, we're done */
+
+			strbuf_release(&buf);
+			return ret; /* run-command will handle the error */
 		}
 	}
 
-	close(proc.in);
-	sigchain_pop(SIGPIPE);
 	strbuf_release(&buf);
+	return 1; /* no more input to feed */
+}
 
-	ret |= finish_command(&proc);
-	return ret;
+static int run_transaction_hook(struct ref_transaction *transaction,
+				const char *state)
+{
+	struct run_hooks_opt opt = RUN_HOOKS_OPT_INIT;
+
+	if (!hook_exists(transaction->ref_store->repo, "reference-transaction"))
+		return 0;
+
+	strvec_push(&opt.args, state);
+
+	opt.feed_pipe = transaction_hook_feed_stdin;
+	opt.feed_pipe_ctx = transaction;
+
+	return run_hooks_opt(transaction->ref_store->repo, "reference-transaction", &opt);
 }
 
 int ref_transaction_prepare(struct ref_transaction *transaction,
