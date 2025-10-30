@@ -2280,7 +2280,7 @@ int validate_submodule_git_dir(char *git_dir, const char *submodule_name)
 	size_t len = strlen(git_dir), suffix_len = strlen(submodule_name);
 	char *p = git_dir + len - suffix_len;
 	bool suffixes_match = !strcmp(p, submodule_name);
-	int ret = 0;
+	int ret = 0, core_ignorecase = 0;
 
 	/* Prevent the use of '/' when extensions.submoduleEncoding is enabled. */
 	if (the_repository->repository_format_submodule_encoding && strchr(p, '/'))
@@ -2310,6 +2310,25 @@ int validate_submodule_git_dir(char *git_dir, const char *submodule_name)
 				return gitdir_error(_("submodule git dir '%s' is inside git dir '%.*s'"),
 						    git_dir, (int)(p - git_dir), git_dir);
 		}
+	}
+
+	/* Prevent conflicts on case-folding filesystems */
+	repo_config_get_bool(the_repository, "core.ignorecase", &core_ignorecase);
+	if (ignore_case || core_ignorecase) {
+		const char *modules_marker = "/modules/";
+		char *lower_gitdir = xstrdup(git_dir);
+
+		if ((p = strstr(lower_gitdir, modules_marker))) {
+			for (; *p; p++)
+				*p = tolower(*p);
+
+			if (strcmp(lower_gitdir, git_dir) && is_git_directory(lower_gitdir))
+				ret = gitdir_error(_("submodule git dir '%s' collides with '%s'"),
+						   git_dir, lower_gitdir);
+		}
+
+		FREE_AND_NULL(lower_gitdir);
+		return ret;
 	}
 
 	return 0;
@@ -2647,10 +2666,17 @@ void submodule_name_to_gitdir(struct strbuf *buf, struct repository *r,
 	if (!validate_and_set_submodule_gitdir(buf, submodule_name))
 		return;
 
-	/* Case 2: Try URI-safe (RFC3986) encoding first, this fixes nested gitdirs */
+	/* Case 2.1: Try URI-safe (RFC3986) encoding first, this fixes nested gitdirs */
 	strbuf_reset(buf);
 	repo_git_path_append(r, buf, "modules/");
 	strbuf_addstr_urlencode(buf, submodule_name, is_rfc3986_unreserved);
+	if (!validate_and_set_submodule_gitdir(buf, submodule_name))
+		return;
+
+	/* Case 2.2: Try extended uppercase URI (RFC3986) encoding, to fix case-folding */
+	strbuf_reset(buf);
+	repo_git_path_append(r, buf, "modules/");
+	strbuf_addstr_urlencode(buf, submodule_name, is_casefolding_rfc3986_unreserved);
 	if (!validate_and_set_submodule_gitdir(buf, submodule_name))
 		return;
 
