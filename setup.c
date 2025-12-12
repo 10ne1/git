@@ -2661,7 +2661,7 @@ int init_db(const char *git_dir, const char *real_git_dir,
 	    const char *initial_branch,
 	    int init_shared_repository, unsigned int flags)
 {
-	int reinit;
+	int reinit, auto_setup_submodule_path_config = 0;
 	int exist_ok = flags & INIT_DB_EXIST_OK;
 	char *original_git_dir = real_pathdup(git_dir, 1);
 	struct repository_format repo_fmt = REPOSITORY_FORMAT_INIT;
@@ -2711,6 +2711,16 @@ int init_db(const char *git_dir, const char *real_git_dir,
 		create_reference_database(repo_fmt.ref_storage_format,
 					  initial_branch, flags & INIT_DB_QUIET);
 	create_object_directory();
+
+	repo_config_get_bool(the_repository, "init.autoSetupSubmodulePathConfig",
+			     &auto_setup_submodule_path_config);
+	if (auto_setup_submodule_path_config) {
+		int version = 0;
+		repo_config_get_int(the_repository, "core.repositoryformatversion", &version);
+		if (version < 1)
+			repo_config_set(the_repository, "core.repositoryformatversion", "1");
+		repo_config_set(the_repository, "extensions.submodulepathconfig", "true");
+	}
 
 	if (repo_settings_get_shared_repository(the_repository)) {
 		char buf[10];
