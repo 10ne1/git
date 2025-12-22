@@ -2440,4 +2440,60 @@ test_expect_success 'combine --ignore-blank-lines with --function-context 2' '
 	test_cmp expect actual
 '
 
+test_expect_success 'check tab between non-whitespace (tab-between-non-ws: off)' '
+	git config core.whitespace "-tab-between-non-ws" &&
+	printf "1234567\tb" >x &&
+	git add x &&
+	git diff --cached --check
+'
+
+test_expect_success 'check tab between non-whitespace at tab stop (tab-between-non-ws: on)' '
+	git config core.whitespace "tab-between-non-ws,tabwidth=8" &&
+	printf "1234567\tb" >x &&
+	git add x &&
+	test_must_fail git diff --cached --check
+'
+
+test_expect_success 'check tab between non-whitespace not at tab stop (tab-between-non-ws: on)' '
+	git config core.whitespace "tab-between-non-ws,tabwidth=8" &&
+	printf "a\tb" >x &&
+	git add x &&
+	git diff --cached --check
+'
+
+test_expect_success 'check tab between non-whitespace with tabwidth=4 (tab-between-non-ws: on)' '
+	git config core.whitespace "tab-between-non-ws,tabwidth=4" &&
+	printf "123\tb" >x &&
+	git add x &&
+	test_must_fail git diff --cached --check
+'
+
+test_expect_success 'check tab between non-whitespace with tabwidth=4 (tab-between-non-ws: on)' '
+	git config core.whitespace "tab-between-non-ws,tabwidth=4" &&
+	printf "1234\tb" >x &&
+	git add x &&
+	git diff --cached --check
+'
+
+test_expect_success 'check multiple tabs with one error (tab-between-non-ws: on)' '
+	git config core.whitespace "tab-between-non-ws,tabwidth=8" &&
+	printf "a\t1234567\tb" >x &&
+	git add x &&
+	test_must_fail git diff --cached --check
+'
+
+test_expect_success 'check tab at beginning of line (tab-between-non-ws: on)' '
+	git config core.whitespace "tab-between-non-ws,tabwidth=8" &&
+	printf "\ta" >x &&
+	git add x &&
+	git diff --cached --check
+'
+
+test_expect_success 'check tab at end of line(tab-between-non-ws: on)' '
+	git config core.whitespace "tab-between-non-ws,-trailing-space,tabwidth=8" &&
+	printf "a\t" >x &&
+	git add x &&
+	git diff --cached --check
+'
+
 test_done

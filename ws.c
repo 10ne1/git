@@ -26,6 +26,7 @@ static struct whitespace_rule {
 	{ "blank-at-eol", WS_BLANK_AT_EOL, 0 },
 	{ "blank-at-eof", WS_BLANK_AT_EOF, 0 },
 	{ "tab-in-indent", WS_TAB_IN_INDENT, 0, 1 },
+	{ "tab-between-non-ws", WS_TAB_BETWEEN_NON_WS, 0 },
 	{ "incomplete-line", WS_INCOMPLETE_LINE, 0, 0 },
 };
 
@@ -140,6 +141,11 @@ char *whitespace_error_string(unsigned ws)
 			strbuf_addstr(&err, ", ");
 		strbuf_addstr(&err, "tab in indent");
 	}
+	if (ws & WS_TAB_BETWEEN_NON_WS) {
+		if (err.len)
+			strbuf_addstr(&err, ", ");
+		strbuf_addstr(&err, "tab between non-whitespace characters");
+	}
 	if (ws & WS_INCOMPLETE_LINE) {
 		if (err.len)
 			strbuf_addstr(&err, ", ");
@@ -226,6 +232,32 @@ static unsigned ws_check_emit_1(const char *line, int len, unsigned ws_rule,
 			fputs(reset, stream);
 		}
 		written = i;
+	}
+
+	if (ws_rule & WS_TAB_BETWEEN_NON_WS) {
+		/*
+		 * A tab surrounded by non-whitespace characters is a typo candidate
+		 * (a space might have been intended). This checks for a tab that
+		 * would be expanded to a single space, which is when it appears at
+		 * a column that is one less than a multiple of the tabwidth.
+		 */
+		int col = 0;
+		int tabwidth = ws_tab_width(ws_rule);
+
+		if (!tabwidth)
+			BUG("a known tabwidth is required by WS_TAB_BETWEEN_NON_WS");
+
+		for (i = 0; i < len; i++) {
+			if (line[i] == '\t') {
+				if (i > 0 && i < len - 1 &&
+				    !isspace(line[i - 1]) && !isspace(line[i + 1]) &&
+				    (col % tabwidth) == (tabwidth - 1))
+					result |= WS_TAB_BETWEEN_NON_WS;
+				col += tabwidth - (col % tabwidth);
+			} else {
+				col++;
+			}
+		}
 	}
 
 	if (stream) {

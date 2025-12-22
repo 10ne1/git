@@ -16,6 +16,7 @@ struct strbuf;
 #define WS_BLANK_AT_EOF         (1<<10)
 #define WS_TAB_IN_INDENT        (1<<11)
 #define WS_INCOMPLETE_LINE      (1<<12)
+#define WS_TAB_BETWEEN_NON_WS   (1<<13)
 
 #define WS_TRAILING_SPACE       (WS_BLANK_AT_EOL|WS_BLANK_AT_EOF)
 #define WS_DEFAULT_RULE (WS_TRAILING_SPACE|WS_SPACE_BEFORE_TAB|8)
