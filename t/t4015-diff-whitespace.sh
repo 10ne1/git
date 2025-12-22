@@ -2440,4 +2440,147 @@ test_expect_success 'combine --ignore-blank-lines with --function-context 2' '
 	test_cmp expect actual
 '
 
+test_expect_success 'check tab between non-whitespace (tab-between-non-ws: off)' '
+	git config core.whitespace "-tab-between-non-ws" &&
+
+	printf "1234567\tb" >x &&
+	git add x &&
+	git diff --cached --check &&
+
+	git diff --cached --color >raw &&
+	test_decode_color <raw >actual &&
+	! test_grep "<GREEN>1234567<RESET><BLUE>	<RESET><GREEN>b<RESET>" actual &&
+	test_grep "<GREEN>1234567	b<RESET>" actual &&
+
+	# should apply without error because tab-between-non-ws is off
+	git diff --cached >patch.diff &&
+	git checkout HEAD -- x &&
+	git apply --whitespace=error patch.diff
+'
+
+test_expect_success 'check tab between non-whitespace at tab stop (tab-between-non-ws: on)' '
+	git config core.whitespace "tab-between-non-ws,tabwidth=8" &&
+	printf "1234567\tb" >x &&
+	git add x &&
+	test_must_fail git diff --cached --check &&
+
+	git diff --cached --color >raw &&
+	test_decode_color <raw >actual &&
+	test_grep "<GREEN>1234567<RESET><BLUE>	<RESET><GREEN>b<RESET>" actual &&
+	! test_grep "<GREEN>1234567	b<RESET>" actual &&
+
+	git diff --cached >patch.diff &&
+	git checkout HEAD -- x &&
+	test_must_fail git apply --whitespace=error patch.diff &&
+	git apply --whitespace=fix patch.diff &&
+	printf "1234567 b" >expected &&
+	test_cmp expected x
+'
+
+test_expect_success 'check tab between non-whitespace not at tab stop (tab-between-non-ws: on)' '
+	git config core.whitespace "tab-between-non-ws,tabwidth=8" &&
+	printf "a\tb" >x &&
+	git add x &&
+	git diff --cached --check &&
+
+	git diff --cached --color >raw &&
+	test_decode_color <raw >actual &&
+	! test_grep "<GREEN>a<RESET><BLUE>	<RESET><GREEN>b<RESET>" actual &&
+	test_grep "<GREEN>a	b<RESET>" actual &&
+
+	# should apply without error because the input is valid
+	git diff --cached >patch.diff &&
+	git checkout HEAD -- x &&
+	git apply --whitespace=error patch.diff
+'
+
+test_expect_success 'check tab between non-whitespace with tabwidth=4 (tab-between-non-ws: on)' '
+	git config core.whitespace "tab-between-non-ws,tabwidth=4" &&
+	printf "123\tb" >x &&
+	git add x &&
+	test_must_fail git diff --cached --check &&
+
+	git diff --cached --color >raw &&
+	test_decode_color <raw >actual &&
+	test_grep "<GREEN>123<RESET><BLUE>	<RESET><GREEN>b<RESET>" actual &&
+	! test_grep "<GREEN>123	b<RESET>" actual &&
+
+	git diff --cached >patch.diff &&
+	git checkout HEAD -- x &&
+	test_must_fail git apply --whitespace=error patch.diff &&
+	git apply --whitespace=fix patch.diff &&
+	printf "123 b" >expected &&
+	test_cmp expected x
+'
+
+test_expect_success 'check tab between non-whitespace with tabwidth=4 (tab-between-non-ws: on)' '
+	git config core.whitespace "tab-between-non-ws,tabwidth=4" &&
+	printf "1234\tb" >x &&
+	git add x &&
+	git diff --cached --check &&
+
+	git diff --cached --color >raw &&
+	test_decode_color <raw >actual &&
+	! test_grep "<GREEN>1234<RESET><BLUE>	<RESET><GREEN>b<RESET>" actual &&
+	test_grep "<GREEN>1234	b<RESET>" actual &&
+
+	# should apply without error because tab is at tab stop
+	git diff --cached >patch.diff &&
+	git checkout HEAD -- x &&
+	git apply --whitespace=error patch.diff
+'
+
+test_expect_success 'check multiple tabs with one error (tab-between-non-ws: on)' '
+	git config core.whitespace "tab-between-non-ws,tabwidth=8" &&
+	printf "a\t1234567\tb" >x &&
+	git add x &&
+	test_must_fail git diff --cached --check &&
+
+	git diff --cached --color >raw &&
+	test_decode_color <raw >actual &&
+	test_grep "<GREEN>a	1234567<RESET><BLUE>	<RESET><GREEN>b<RESET>" actual &&
+	! test_grep "<GREEN>a	1234567	b<RESET>" actual &&
+
+	git diff --cached >patch.diff &&
+	git checkout HEAD -- x &&
+	test_must_fail git apply --whitespace=error patch.diff &&
+	git apply --whitespace=fix patch.diff &&
+	printf "a\t1234567 b" >expected &&
+	test_cmp expected x
+'
+
+test_expect_success 'check tab at beginning of line (tab-between-non-ws: on)' '
+	git config core.whitespace "tab-between-non-ws,tabwidth=8" &&
+	printf "\ta" >x &&
+	git add x &&
+	git diff --cached --check &&
+
+	git diff --cached --color >raw &&
+	test_decode_color <raw >actual &&
+	! test_grep "<BLUE>	" actual &&
+	test_grep "<GREEN>+<RESET>	<GREEN>a<RESET>" actual &&
+
+	# should apply without error because tab is a valid indentation
+	git diff --cached >patch.diff &&
+	git checkout HEAD -- x &&
+	git apply --whitespace=error patch.diff
+'
+
+test_expect_success 'check tab at end of line(tab-between-non-ws: on)' '
+	git config core.whitespace "tab-between-non-ws,-trailing-space,tabwidth=8" &&
+	printf "a\t" >x &&
+	git add x &&
+	git diff --cached --check &&
+
+	git diff --cached --color >raw &&
+	test_decode_color <raw >actual &&
+	! test_grep "<GREEN>a<RESET><BLUE>	" actual &&
+	test_grep "<GREEN>a	<RESET>" actual &&
+
+	# should apply without error because tab is caught by another check (trailing-space)
+	git diff --cached >patch.diff &&
+	git checkout HEAD -- x &&
+	git apply --whitespace=error patch.diff
+'
+
 test_done
