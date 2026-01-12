@@ -2430,9 +2430,9 @@ struct transaction_feed_cb_data {
 static int transaction_hook_feed_stdin(int hook_stdin_fd, void *pp_cb, void *pp_task_cb)
 {
 	struct hook_cb_data *hook_cb = pp_cb;
-	struct hook *h = pp_task_cb;
+	struct string_list_item *h = pp_task_cb;
 	struct ref_transaction *transaction = hook_cb->options->feed_pipe_ctx;
-	struct transaction_feed_cb_data *feed_cb_data = h->feed_pipe_cb_data;
+	struct transaction_feed_cb_data *feed_cb_data = h->util;
 	struct strbuf *buf = &feed_cb_data->buf;
 	struct ref_update *update;
 	size_t i = feed_cb_data->index++;
@@ -2493,7 +2493,6 @@ static int run_transaction_hook(struct ref_transaction *transaction,
 				const char *state)
 {
 	struct run_hooks_opt opt = RUN_HOOKS_OPT_INIT_PARALLEL;
-	struct hook hook_run_me = HOOK_INIT;
 	struct transaction_feed_cb_data feed_ctx = { 0 };
 	int ret = 0;
 
@@ -2501,8 +2500,7 @@ static int run_transaction_hook(struct ref_transaction *transaction,
 
 	opt.feed_pipe = transaction_hook_feed_stdin;
 	opt.feed_pipe_ctx = transaction;
-	hook_run_me.feed_pipe_cb_data = &feed_ctx;
-	opt.run_me = &hook_run_me;
+	opt.feed_pipe_cb_data = &feed_ctx;
 	opt.copy_feed_pipe_cb_data = copy_transaction_feed_cb_data;
 	opt.free_feed_pipe_cb_data = free_transaction_feed_cb_data;
 

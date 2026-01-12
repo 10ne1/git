@@ -11,76 +11,6 @@
 #include "strbuf.h"
 #include "environment.h"
 #include "setup.h"
-#include "list.h"
-
-static void free_hook(struct hook *ptr)
-{
-	if (ptr) {
-		free((char*)ptr->name);
-	}
-	free(ptr);
-}
-
-/*
- * Walks the linked list at 'head' to check if any hook named 'name'
- * already exists. Returns a pointer to that hook if so, otherwise returns NULL.
- */
-static struct hook *find_hook_by_name(struct list_head *head, const char *name)
-{
-	struct list_head *pos = NULL, *tmp = NULL;
-	struct hook *found = NULL;
-
-	list_for_each_safe(pos, tmp, head) {
-		struct hook *it = list_entry(pos, struct hook, list);
-		if (!strcmp(it->name, name)) {
-			list_del(pos);
-			found = it;
-			break;
-		}
-	}
-	return found;
-}
-
-/*
- * Appends a hook to the list, or moves it to the end if it already
- * exists. This function takes ownership of the 'name' string.
- */
-static void append_or_move_hook(struct list_head *head, char *name)
-{
-	struct hook *to_add = NULL;
-
-	if (name) {
-		/* find_hook_by_name removes the entry from the list if found */
-		to_add = find_hook_by_name(head, name);
-	}
-
-	if (!to_add) {
-		/* This is a new hook, create it and take ownership of name. */
-		to_add = xmalloc(sizeof(*to_add));
-		to_add->name = name; /* Takes ownership */
-		to_add->feed_pipe_cb_data = NULL;
-	} else {
-		/* The hook already existed, so we don't need the new name string. */
-		free(name);
-	}
-
-	list_add_tail(&to_add->list, head);
-}
-
-static void remove_hook(struct list_head *to_remove)
-{
-	struct hook *hook_to_remove = list_entry(to_remove, struct hook, list);
-	list_del(to_remove);
-	free_hook(hook_to_remove);
-}
-
-void clear_hook_list(struct list_head *head)
-{
-	struct list_head *pos, *tmp;
-	list_for_each_safe(pos, tmp, head)
-		remove_hook(pos);
-	free(head);
-}
 
 const char *find_hook(struct repository *r, const char *name)
 {
@@ -122,18 +52,19 @@ const char *find_hook(struct repository *r, const char *name)
 int hook_exists(struct repository *r, const char *name)
 {
 	int exists = 0;
-	struct list_head *hooks = list_hooks(r, name);
+	struct string_list *hooks = list_hooks(r, name);
 
-	exists = !list_empty(hooks);
+	exists = hooks->nr > 0;
 
-	clear_hook_list(hooks);
+	string_list_clear(hooks, 1);
+	free(hooks);
 	return exists;
 }
 
 struct hook_config_cb
 {
 	const char *hook_event;
-	struct list_head *list;
+	struct string_list *list;
 };
 
 /*
@@ -148,6 +79,8 @@ static int hook_config_lookup(const char *key, const char *value,
 	struct hook_config_cb *data = cb_data;
 	const char *name, *event_key;
 	size_t name_len = 0;
+	struct string_list_item *item;
+	char *hook_name;
 
 	/*
 	 * Don't bother doing the expensive parse if there's no
@@ -161,24 +94,32 @@ static int hook_config_lookup(const char *key, const char *value,
 	    strcmp(event_key, "event"))
 		return 0;
 
+	hook_name = xmemdupz(name, name_len);
+
 	/*
-	 * Create a heap-allocated, null-terminated copy of the hook name
-	 * and pass ownership of it to append_or_move_hook().
+	 * Check if the hook is already in the list. If so, remove it so we can
+	 * append it to the end (config order).
 	 */
-	append_or_move_hook(data->list, xmemdupz(name, name_len));
+	item = unsorted_string_list_lookup(data->list, hook_name);
+	if (item) {
+		unsorted_string_list_delete_item(data->list, item - data->list->items, 0);
+	}
+
+	string_list_append(data->list, hook_name);
+	free(hook_name);
 
 	return 0;
 }
 
-struct list_head *list_hooks(struct repository *r, const char *hookname)
+struct string_list *list_hooks(struct repository *r, const char *hookname)
 {
-	struct list_head *hook_head = xmalloc(sizeof(struct list_head));
+	struct string_list *hook_head = xmalloc(sizeof(struct string_list));
 	struct hook_config_cb cb_data = {
 		.hook_event = hookname,
 		.list = hook_head,
 	};
 
-	INIT_LIST_HEAD(hook_head);
+	string_list_init_dup(hook_head);
 
 	if (!hookname)
 		BUG("null hookname was provided to hook_list()!");
@@ -189,7 +130,7 @@ struct list_head *list_hooks(struct repository *r, const char *hookname)
 	/* Add the hook from the hookdir. The placeholder makes it easier to
 	 * allocate work in pick_next_hook. */
 	if (have_git_dir() && find_hook(r, hookname))
-		append_or_move_hook(hook_head, NULL);
+		string_list_append(hook_head, "");
 
 	return hook_head;
 }
@@ -200,9 +141,9 @@ static int pick_next_hook(struct child_process *cp,
 			  void **pp_task_cb)
 {
 	struct hook_cb_data *hook_cb = pp_cb;
-	struct hook *to_run = hook_cb->options->run_me;
+	struct string_list_item *to_run = hook_cb->options->run_me;
 
-	if (!to_run)
+	if (!to_run || to_run >= hook_cb->head->items + hook_cb->head->nr)
 		return 0;
 
 	cp->no_stdin = 1;
@@ -231,20 +172,21 @@ static int pick_next_hook(struct child_process *cp,
 	 * to enable oneliners, let config-specified hooks run in shell.
 	 * config-specified hooks have a name.
 	 */
-	cp->use_shell = !!to_run->name;
+
+	cp->use_shell = !!*to_run->string;
 
 	/* add command */
-	if (to_run->name) {
+	if (*to_run->string) {
 		/* ...from config */
 		struct strbuf cmd_key = STRBUF_INIT;
 		char *command = NULL;
 
-		strbuf_addf(&cmd_key, "hook.%s.command", to_run->name);
+		strbuf_addf(&cmd_key, "hook.%s.command", to_run->string);
 		if (repo_config_get_string(hook_cb->repository,
 					   cmd_key.buf, &command)) {
 			die(_("'hook.%s.command' must be configured "
 			      "or 'hook.%s.event' must be removed; aborting.\n"),
-			    to_run->name, to_run->name);
+			    to_run->string, to_run->string);
 		}
 
 		strvec_push(&cp->args, command);
@@ -276,11 +218,7 @@ static int pick_next_hook(struct child_process *cp,
 	strvec_pushv(&cp->args, hook_cb->options->args.v);
 
 	/* Get the next entry ready */
-	if (hook_cb->options->run_me->list.next == hook_cb->head)
-		hook_cb->options->run_me = NULL;
-	else
-		hook_cb->options->run_me = list_entry(hook_cb->options->run_me->list.next,
-						      struct hook, list);
+	hook_cb->options->run_me++;
 
 	return 1;
 }
@@ -290,15 +228,15 @@ static int notify_start_failure(struct strbuf *out,
 				void *pp_task_cb)
 {
 	struct hook_cb_data *hook_cb = pp_cb;
-	struct hook *hook = pp_task_cb;
+	struct string_list_item *hook = pp_task_cb;
 
 	if (hook_cb)
 		hook_cb->rc |= 1;
 
 	if (out) {
-		if (hook && hook->name)
+		if (hook && *hook->string)
 			strbuf_addf(out, _("Couldn't start hook '%s'\n"),
-				    hook->name);
+				    hook->string);
 		else
 			strbuf_addstr(out, _("Couldn't start hook from hooks directory\n"));
 	}
@@ -360,6 +298,7 @@ int run_hooks_opt(struct repository *r, const char *hook_name,
 		.head = list_hooks(r, hook_name),
 		.repository = r,
 	};
+
 	int ret = 0;
 	const struct run_process_parallel_opts opts = {
 		.tr2_category = "hook",
@@ -377,18 +316,17 @@ int run_hooks_opt(struct repository *r, const char *hook_name,
 		.data = &cb_data,
 	};
 
-	if (options->run_me && options->run_me->feed_pipe_cb_data) {
-		struct list_head *pos;
-		list_for_each(pos, cb_data.head) {
-			struct hook *h = list_entry(pos, struct hook, list);
+	if (options->feed_pipe_cb_data) {
+		struct string_list_item *item;
+		for_each_string_list_item(item, cb_data.head) {
 			if (options->copy_feed_pipe_cb_data)
-				h->feed_pipe_cb_data = options->copy_feed_pipe_cb_data(options->run_me->feed_pipe_cb_data);
+				item->util = options->copy_feed_pipe_cb_data(options->feed_pipe_cb_data);
 			else
-				h->feed_pipe_cb_data = options->run_me->feed_pipe_cb_data;
+				item->util = options->feed_pipe_cb_data;
 		}
 	}
-	cb_data.options->run_me = list_first_entry(cb_data.head, struct hook, list);
 
+	cb_data.options->run_me = cb_data.head->items;
 	if (!options)
 		BUG("a struct run_hooks_opt must be provided to run_hooks");
 
@@ -398,28 +336,32 @@ int run_hooks_opt(struct repository *r, const char *hook_name,
 	if (options->invoked_hook)
 		*options->invoked_hook = 0;
 
-	if (list_empty(cb_data.head) && !options->error_if_missing)
+	if (!cb_data.head->nr && !options->error_if_missing)
 		goto cleanup;
 
-	if (list_empty(cb_data.head)) {
+	if (!cb_data.head->nr) {
 		ret = error("cannot find a hook named %s", hook_name);
 		goto cleanup;
 	}
 
 	run_processes_parallel(&opts);
 	ret = cb_data.rc;
+
 cleanup:
 	if (options->free_feed_pipe_cb_data) {
-		struct list_head *pos;
-		list_for_each(pos, cb_data.head) {
-			struct hook *h = list_entry(pos, struct hook, list);
-			if (h->feed_pipe_cb_data)
-				options->free_feed_pipe_cb_data(h->feed_pipe_cb_data);
+		struct string_list_item *item;
+		for_each_string_list_item(item, cb_data.head) {
+			if (item->util)
+				options->free_feed_pipe_cb_data(item->util);
 		}
 	}
-	clear_hook_list(cb_data.head);
+
+	// TODO: revisit this logic because we clear two times
+	string_list_clear(cb_data.head, 0);
+	free(cb_data.head);
 	strbuf_release(&abs_path);
 	run_hooks_opt_clear(options);
+
 	return ret;
 }
 
