@@ -184,4 +184,131 @@ test_expect_success 'stdin to hooks' '
 	test_cmp expect actual
 '
 
+check_stdout_separate_from_stderr () {
+	for hook in "$@"
+	do
+		test_grep ! "Hook $hook stdout" stderr.actual &&
+		test_grep ! "Hook $hook stderr" stdout.actual &&
+		test_grep "Hook $hook stderr" stderr.actual &&
+		test_grep "Hook $hook stdout" stdout.actual || return 1
+	done
+}
+
+check_stdout_merged_to_stderr () {
+	test_grep ! "Hook .* stdout" stdout.actual &&
+	test_grep ! "Hook .* stderr" stdout.actual &&
+	for hook in "$@"
+	do
+		test_grep "Hook $hook stdout" stderr.actual &&
+		test_grep "Hook $hook stderr" stderr.actual || return 1
+	done
+}
+
+test_expect_success 'client pre-push hook expects separate stdout and stderr' '
+	test_when_finished "rm -f stdout.actual stderr.actual" &&
+	git init --bare remote &&
+	git remote add origin remote &&
+	test_commit A &&
+
+	hook=pre-push &&
+	test_hook $hook <<-EOF &&
+	echo >&1 Hook $hook stdout
+	echo >&2 Hook $hook stderr
+	EOF
+
+	git push origin HEAD:main >stdout.actual 2>stderr.actual &&
+	check_stdout_separate_from_stderr pre-push
+'
+
+test_expect_success 'client hooks expect stdout redirected to stderr' '
+	test_when_finished "rm -f stdout.actual stderr.actual" &&
+	for hook in pre-commit post-commit post-checkout pre-merge-commit \
+		prepare-commit-msg commit-msg post-merge post-rewrite reference-transaction \
+		applypatch-msg pre-applypatch post-applypatch pre-rebase post-index-change
+	do
+		test_hook $hook <<-EOF || return 1
+		echo >&1 Hook $hook stdout
+		echo >&2 Hook $hook stderr
+		EOF
+	done &&
+
+	git checkout -B main &&
+	git checkout -b branch-a &&
+	test_commit commit-on-branch-a &&
+
+	# Trigger pre-commit, prepare-commit-msg, commit-msg, post-commit, reference-transaction
+	git commit --allow-empty -m "Test" >stdout.actual 2>stderr.actual &&
+	check_stdout_merged_to_stderr pre-commit prepare-commit-msg commit-msg post-commit reference-transaction &&
+
+	# Trigger post-checkout, reference-transaction
+	git checkout -b new-branch main >stdout.actual 2>stderr.actual &&
+	check_stdout_merged_to_stderr post-checkout reference-transaction &&
+
+	# Trigger pre-merge-commit, post-merge, reference-transaction
+	test_commit new-branch-commit &&
+	git merge --no-ff branch-a >stdout.actual 2>stderr.actual &&
+	check_stdout_merged_to_stderr pre-merge-commit post-merge reference-transaction &&
+
+	# Trigger post-rewrite, reference-transaction
+	git commit --amend --allow-empty --no-edit >stdout.actual 2>stderr.actual &&
+	check_stdout_merged_to_stderr post-rewrite reference-transaction &&
+
+	# Trigger applypatch-msg, pre-applypatch, post-applypatch
+	git checkout -b branch-b main &&
+	test_commit branch-b &&
+	git format-patch -1 --stdout >patch &&
+	git checkout -b branch-c main &&
+	git am patch >stdout.actual 2>stderr.actual &&
+	check_stdout_merged_to_stderr applypatch-msg pre-applypatch post-applypatch &&
+
+	# Trigger pre-rebase
+	git checkout -b branch-d main &&
+	test_commit branch-d &&
+	git checkout main &&
+	test_commit diverge-main &&
+	git checkout branch-d &&
+	git rebase main >stdout.actual 2>stderr.actual &&
+	check_stdout_merged_to_stderr pre-rebase &&
+
+	# Trigger post-index-change
+	oid=$(git hash-object -w --stdin </dev/null) &&
+	git update-index --add --cacheinfo 100644 $oid new-file >stdout.actual 2>stderr.actual &&
+	check_stdout_merged_to_stderr post-index-change
+'
+
+test_expect_success 'server hooks expect stdout redirected to stderr' '
+	test_when_finished "rm -f stdout.actual stderr.actual" &&
+	git init --bare remote-server &&
+	git remote add origin-server remote-server &&
+
+	for hook in pre-receive update post-receive post-update
+	do
+		write_script remote-server/hooks/$hook <<-EOF || return 1
+		echo >&1 Hook $hook stdout
+		echo >&2 Hook $hook stderr
+		EOF
+	done &&
+
+	# Trigger pre-receive update post-receive post-update
+	git push origin-server HEAD:new-branch >stdout.actual 2>stderr.actual &&
+	check_stdout_merged_to_stderr pre-receive update post-receive post-update
+'
+
+test_expect_success 'server push-to-checkout hook expects stdout redirected to stderr' '
+	test_when_finished "rm -f stdout.actual stderr.actual" &&
+	git init server &&
+	git -C server checkout -b main &&
+	test_config -C server receive.denyCurrentBranch updateInstead &&
+	git remote add origin-server-2 server &&
+
+	write_script server/.git/hooks/push-to-checkout <<-EOF &&
+	echo >&1 Hook push-to-checkout stdout
+	echo >&2 Hook push-to-checkout stderr
+	EOF
+
+	# Trigger push-to-checkout
+	git push origin-server-2 HEAD:main >stdout.actual 2>stderr.actual &&
+	check_stdout_merged_to_stderr push-to-checkout
+'
+
 test_done

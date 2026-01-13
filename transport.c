@@ -1373,6 +1373,15 @@ static int run_pre_push_hook(struct transport *transport,
 	opt.feed_pipe = pre_push_hook_feed_stdin;
 	opt.feed_pipe_cb_data = &data;
 
+	/*
+	 * pre-push hooks expect stdout & stderr to be separate, so don't merge
+	 * them to keep backwards compatibility with existing hooks.
+	 * run_process_parallel(), called via run_hooks_opt() below, will buffer
+	 * and merge the streams when output is grouped, so also set ungroup = 1.
+	 */
+	opt.stdout_to_stderr = 0;
+	opt.ungroup = 1;
+
 	ret = run_hooks_opt(the_repository, "pre-push", &opt);
 
 	strbuf_release(&data.buf);
