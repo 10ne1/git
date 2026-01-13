@@ -40,6 +40,11 @@ struct run_hooks_opt
 	unsigned int ungroup:1;
 
 	/**
+	 * Send the hook's stdout to stderr.
+	 */
+	unsigned int stdout_to_stderr:1;
+
+	/**
 	 * Path to file which should be piped to stdin for each hook.
 	 */
 	const char *path_to_stdin;
@@ -93,6 +98,7 @@ struct run_hooks_opt
 #define RUN_HOOKS_OPT_INIT { \
 	.env = STRVEC_INIT, \
 	.args = STRVEC_INIT, \
+	.stdout_to_stderr = 1, \
 }
 
 struct hook_cb_data {

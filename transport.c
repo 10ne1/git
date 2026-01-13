@@ -1372,6 +1372,7 @@ static int run_pre_push_hook(struct transport *transport,
 
 	opt.feed_pipe = pre_push_hook_feed_stdin;
 	opt.feed_pipe_cb_data = &data;
+	opt.stdout_to_stderr = 0;
 
 	ret = run_hooks_opt(the_repository, "pre-push", &opt);
 
