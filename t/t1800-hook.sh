@@ -311,4 +311,53 @@ test_expect_success 'server push-to-checkout hook expects stdout redirected to s
 	check_stdout_merged_to_stderr push-to-checkout
 '
 
+test_expect_success 'receive-pack hooks sideband output works' '
+	git init --bare target-sideband.git &&
+	test_commit sideband-a &&
+	git remote add origin-sideband ./target-sideband.git &&
+
+	# pre-receive hook
+	test_hook -C target-sideband.git pre-receive <<-\EOF &&
+	echo "stdout pre-receive"
+	echo "stderr pre-receive" >&2
+	EOF
+
+	git push origin-sideband HEAD:refs/heads/pre-receive 2>actual &&
+	test_grep "remote: stdout pre-receive" actual &&
+	test_grep "remote: stderr pre-receive" actual &&
+
+	# update hook
+	test_hook -C target-sideband.git update <<-\EOF &&
+	echo "stdout update"
+	echo "stderr update" >&2
+	EOF
+
+	test_commit sideband-b &&
+	git push origin-sideband HEAD:refs/heads/update 2>actual &&
+	test_grep "remote: stdout update" actual &&
+	test_grep "remote: stderr update" actual &&
+
+	# post-receive hook
+	test_hook -C target-sideband.git post-receive <<-\EOF &&
+	echo >&1 "stdout post-receive"
+	echo >&2 "stderr post-receive"
+	EOF
+
+	test_commit sideband-c &&
+	git push origin-sideband HEAD:refs/heads/post-receive 2>actual &&
+	test_grep "remote: stdout post-receive" actual &&
+	test_grep "remote: stderr post-receive" actual &&
+
+	# post-update hook
+	test_hook -C target-sideband.git post-update <<-\EOF &&
+	echo >&1 "stdout post-update"
+	echo >&2 "stderr post-update"
+	EOF
+
+	test_commit sideband-d &&
+	git push origin-sideband HEAD:refs/heads/post-update 2>actual &&
+	test_grep "remote: stdout post-update" actual &&
+	test_grep "remote: stderr post-update" actual
+'
+
 test_done

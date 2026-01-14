@@ -905,8 +905,10 @@ static int run_receive_hook(struct command *commands,
 	prepare_push_cert_sha1(&opt);
 
 	/* set up sideband printer */
-	if (use_sideband)
+	if (use_sideband) {
 		opt.consume_output = hook_output_to_sideband;
+		opt.ungroup = 0; /* mandatory for sideband output */
+	}
 
 	/* set up stdin callback */
 	feed_state.cmd = commands;
@@ -933,8 +935,10 @@ static int run_update_hook(struct command *cmd)
 		     oid_to_hex(&cmd->new_oid),
 		     NULL);
 
-	if (use_sideband)
+	if (use_sideband) {
 		opt.consume_output = hook_output_to_sideband;
+		opt.ungroup = 0; /* mandatory for sideband output */
+	}
 
 	return run_hooks_opt(the_repository, "update", &opt);
 }
@@ -1623,8 +1627,10 @@ static void run_update_post_hook(struct command *commands)
 	if (!opt.args.nr)
 		return;
 
-	if (use_sideband)
+	if (use_sideband) {
 		opt.consume_output = hook_output_to_sideband;
+		opt.ungroup = 0; /* mandatory for sideband output */
+	}
 
 	run_hooks_opt(the_repository, "post-update", &opt);
 }

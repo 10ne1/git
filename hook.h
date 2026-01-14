@@ -99,6 +99,7 @@ struct run_hooks_opt
 	.env = STRVEC_INIT, \
 	.args = STRVEC_INIT, \
 	.stdout_to_stderr = 1, \
+	.ungroup = 1, \
 }
 
 struct hook_cb_data {

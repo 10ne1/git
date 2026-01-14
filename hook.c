@@ -199,9 +199,6 @@ int run_hooks(struct repository *r, const char *hook_name)
 {
 	struct run_hooks_opt opt = RUN_HOOKS_OPT_INIT;
 
-	/* All use-cases of this API require ungrouping. */
-	opt.ungroup = 1;
-
 	return run_hooks_opt(r, hook_name, &opt);
 }
 
