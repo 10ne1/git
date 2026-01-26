@@ -1394,11 +1394,8 @@ static int run_pre_push_hook(struct transport *transport,
 	opt.copy_feed_pipe_cb_data = copy_pre_push_hook_data;
 	opt.free_feed_pipe_cb_data = free_pre_push_hook_data;
 
-	/*
-	 * pre-push hooks expect stdout & stderr to be separate, so don't merge
-	 * them to keep backwards compatibility with existing hooks.
-	 */
-	opt.stdout_to_stderr = 0;
+	/* merge stdout to stderr only when extensions.StdoutToStderr is enabled */
+	opt.stdout_to_stderr = the_repository->repository_format_hook_stdout_to_stderr;
 
 	ret = run_hooks_opt(the_repository, "pre-push", &opt);
 
