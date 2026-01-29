@@ -337,4 +337,50 @@ test_expect_success 'server push-to-checkout hook expects stdout redirected to s
 	check_stdout_merged_to_stderr push-to-checkout
 '
 
+test_expect_success '`git init` respects init.defaultHookStdoutToStderr' '
+	test_when_finished "rm -rf repo-init" &&
+	test_config_global init.defaultHookStdoutToStderr true &&
+	git init repo-init &&
+	git -C repo-init config extensions.hookStdoutToStderr >actual &&
+	echo true >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success '`git init` does not set extensions.hookStdoutToStderr by default' '
+	test_when_finished "rm -rf upstream" &&
+	git init upstream &&
+	test_must_fail git -C upstream config extensions.hookStdoutToStderr
+'
+
+test_expect_success '`git clone` does not set extensions.hookStdoutToStderr by default' '
+	test_when_finished "rm -rf upstream repo-clone-no-ext" &&
+	git init upstream &&
+	git clone upstream repo-clone-no-ext &&
+	test_must_fail git -C repo-clone-no-ext config extensions.hookStdoutToStderr
+'
+
+test_expect_success '`git clone` respects init.defaultHookStdoutToStderr' '
+	test_when_finished "rm -rf upstream repo-clone" &&
+	git init upstream &&
+	test_config_global init.defaultHookStdoutToStderr true &&
+	git clone upstream repo-clone &&
+	git -C repo-clone config extensions.hookStdoutToStderr >actual &&
+	echo true >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'init.defaultHookStdoutToStderr enables extension for existing repos' '
+	test_when_finished "rm -rf remote-repo existing-repo" &&
+	git init --bare remote-repo &&
+	git init -b main existing-repo &&
+	test_config_global init.defaultHookStdoutToStderr true &&
+	# No local extensions.hookStdoutToStderr config set here, so global should apply
+	cd existing-repo &&
+	test_commit A &&
+	git remote add origin ../remote-repo &&
+	setup_hooks pre-push &&
+	git push origin HEAD >stdout.actual 2>stderr.actual &&
+	check_stdout_merged_to_stderr pre-push
+'
+
 test_done

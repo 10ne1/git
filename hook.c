@@ -268,6 +268,16 @@ int run_hooks_opt(struct repository *r, const char *hook_name,
 	}
 
 	/*
+	 * Allow init.defaultHookStdoutToStderr to enable extensions.hookStdoutToStderr
+	 * for existing repositories (runtime override).
+	 */
+	if (!options->stdout_to_stderr) {
+		int v = 0;
+		repo_config_get_bool(r, "init.defaultHookStdoutToStderr", &v);
+		options->stdout_to_stderr = v;
+	}
+
+	/*
 	 * Initialize the iterator/cursor which holds the next hook to run.
 	 * run_process_parallel() calls pick_next_hook() which increments it for
 	 * each hook command in the list until all hooks have been run.

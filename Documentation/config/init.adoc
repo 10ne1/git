@@ -18,3 +18,7 @@ endif::[]
 	See `--ref-format=` in linkgit:git-init[1]. Both the command line
 	option and the `GIT_DEFAULT_REF_FORMAT` environment variable take
 	precedence over this config.
+
+`init.defaultHookStdoutToStderr`::
+	A boolean that specifies if `extensions.hookStdoutToStderr` should
+	be enabled by default at runtime.
