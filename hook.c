@@ -52,7 +52,7 @@ const char *find_hook(struct repository *r, const char *name)
 	return path.buf;
 }
 
-static void hook_clear(struct hook *h, cb_data_free_fn cb_data_free)
+static void hook_clear(struct hook *h, hook_data_free_fn cb_data_free)
 {
 	if (!h)
 		return;
@@ -70,7 +70,7 @@ static void hook_clear(struct hook *h, cb_data_free_fn cb_data_free)
 	free(h);
 }
 
-void hook_list_clear(struct string_list *hooks, cb_data_free_fn cb_data_free)
+void hook_list_clear(struct string_list *hooks, hook_data_free_fn cb_data_free)
 {
 	struct string_list_item *item;
 
@@ -493,8 +493,7 @@ int run_hooks_opt(struct repository *r, const char *hook_name,
 	 * Ensure cb_data copy and free functions are either provided together,
 	 * or neither one is provided.
 	 */
-	if ((options->feed_pipe_cb_data_alloc && !options->feed_pipe_cb_data_free) ||
-	    (!options->feed_pipe_cb_data_alloc && options->feed_pipe_cb_data_free))
+	if (!options->feed_pipe_cb_data_alloc != !options->feed_pipe_cb_data_free)
 		BUG("feed_pipe_cb_data_alloc and feed_pipe_cb_data_free must be set together");
 
 	if (options->invoked_hook)

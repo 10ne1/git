@@ -7,6 +7,9 @@
 
 struct repository;
 
+typedef void (*hook_data_free_fn)(void *data);
+typedef void *(*hook_data_alloc_fn)(void *init_ctx);
+
 /**
  * Represents a hook command to be run.
  * Hooks can be:
@@ -42,9 +45,6 @@ struct hook {
 	 */
 	void *feed_pipe_cb_data;
 };
-
-typedef void (*cb_data_free_fn)(void *data);
-typedef void *(*cb_data_alloc_fn)(void *init_ctx);
 
 struct run_hooks_opt
 {
@@ -130,16 +130,20 @@ struct run_hooks_opt
 	 * If provided, this function will be called to alloc & initialize the
 	 * `feed_pipe_cb_data` for each hook.
 	 *
+	 * The caller must provide a `feed_pipe_cb_data_free` callback to free
+	 * this memory (missing callback will trigger a bug). Use only the cb to
+	 * free the memory, do not free it manually in the caller.
+	 *
 	 * The `feed_pipe_ctx` pointer can be used to pass initialization data.
 	 */
-	cb_data_alloc_fn feed_pipe_cb_data_alloc;
+	hook_data_alloc_fn feed_pipe_cb_data_alloc;
 
 	/**
 	 * Called to free the memory initialized by `feed_pipe_cb_data_alloc`.
 	 *
 	 * Must always be provided when `feed_pipe_cb_data_alloc` is provided.
 	 */
-	cb_data_free_fn feed_pipe_cb_data_free;
+	hook_data_free_fn feed_pipe_cb_data_free;
 };
 
 #define RUN_HOOKS_OPT_INIT { \
@@ -189,7 +193,7 @@ struct string_list *list_hooks(struct repository *r, const char *hookname,
  * Frees the memory allocated for the hook list, including the `struct hook`
  * items and their internal state.
  */
-void hook_list_clear(struct string_list *hooks, cb_data_free_fn cb_data_free);
+void hook_list_clear(struct string_list *hooks, hook_data_free_fn cb_data_free);
 
 /**
  * Frees the hook configuration cache stored in `struct repository`.
