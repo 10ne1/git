@@ -105,10 +105,12 @@ static void list_hooks_add_default(struct repository *r, const char *hookname,
  * Callback struct to collect all hook.* keys in a single config pass.
  * commands: friendly-name to command map.
  * event_hooks: event-name to list of friendly-names map.
+ * disabled_hooks: set of friendly-names with hook.<friendly-name>.enabled = false.
  */
 struct hook_all_config_cb {
 	struct strmap commands;
 	struct strmap event_hooks;
+	struct string_list disabled_hooks;
 };
 
 /* repo_config() callback that collects all hook.* configuration in one pass. */
@@ -148,6 +150,21 @@ static int hook_config_lookup_all(const char *key, const char *value,
 		char *old = strmap_put(&data->commands, hook_name,
 				       xstrdup(value));
 		free(old);
+	} else if (!strcmp(subkey, "enabled")) {
+		switch (git_parse_maybe_bool(value)) {
+		case 0: /* disabled */
+			if (!unsorted_string_list_lookup(&data->disabled_hooks,
+							 hook_name))
+				string_list_append(&data->disabled_hooks,
+						   hook_name);
+			break;
+		case 1: /* enabled: undo a prior disabled entry */
+			unsorted_string_list_remove(&data->disabled_hooks,
+						    hook_name);
+			break;
+		default:
+			break; /* ignore unrecognised values */
+		}
 	}
 
 	free(hook_name);
@@ -184,6 +201,7 @@ static void build_hook_config_map(struct repository *r, struct strmap *cache)
 
 	strmap_init(&cb_data.commands);
 	strmap_init(&cb_data.event_hooks);
+	string_list_init_dup(&cb_data.disabled_hooks);
 
 	/* Parse all configs in one run. */
 	repo_config(r, hook_config_lookup_all, &cb_data);
@@ -200,6 +218,11 @@ static void build_hook_config_map(struct repository *r, struct strmap *cache)
 			const char *hname = hook_names->items[i].string;
 			char *command;
 
+			/* filter out disabled hooks */
+			if (unsorted_string_list_lookup(&cb_data.disabled_hooks,
+							hname))
+				continue;
+
 			command = strmap_get(&cb_data.commands, hname);
 			if (!command)
 				die(_("'hook.%s.command' must be configured or "
@@ -215,6 +238,7 @@ static void build_hook_config_map(struct repository *r, struct strmap *cache)
 	}
 
 	strmap_clear(&cb_data.commands, 1);
+	string_list_clear(&cb_data.disabled_hooks, 0);
 	strmap_for_each_entry(&cb_data.event_hooks, &iter, e) {
 		string_list_clear(e->value, 0);
 		free(e->value);
