@@ -133,18 +133,27 @@ static int hook_config_lookup_all(const char *key, const char *value,
 	hook_name = xmemdupz(name, name_len);
 
 	if (!strcmp(subkey, "event")) {
-		struct string_list *hooks =
-			strmap_get(&data->event_hooks, value);
+		if (!*value) {
+			/* Empty values reset previous events for this hook. */
+			struct hashmap_iter iter;
+			struct strmap_entry *e;
 
-		if (!hooks) {
-			hooks = xcalloc(1, sizeof(*hooks));
-			string_list_init_dup(hooks);
-			strmap_put(&data->event_hooks, value, hooks);
+			strmap_for_each_entry(&data->event_hooks, &iter, e)
+				unsorted_string_list_remove(e->value, hook_name, 0);
+		} else {
+			struct string_list *hooks =
+				strmap_get(&data->event_hooks, value);
+
+			if (!hooks) {
+				CALLOC_ARRAY(hooks, 1);
+				string_list_init_dup(hooks);
+				strmap_put(&data->event_hooks, value, hooks);
+			}
+
+			/* Re-insert if necessary to preserve last-seen order. */
+			unsorted_string_list_remove(hooks, hook_name, 0);
+			string_list_append(hooks, hook_name);
 		}
-
-		/* Re-insert if necessary to preserve last-seen order. */
-		unsorted_string_list_remove(hooks, hook_name, 0);
-		string_list_append(hooks, hook_name);
 	} else if (!strcmp(subkey, "command")) {
 		/* Store command overwriting the old value */
 		char *old = strmap_put(&data->commands, hook_name,
@@ -160,7 +169,7 @@ static int hook_config_lookup_all(const char *key, const char *value,
 			break;
 		case 1: /* enabled: undo a prior disabled entry */
 			unsorted_string_list_remove(&data->disabled_hooks,
-						    hook_name);
+						    hook_name, 0);
 			break;
 		default:
 			break; /* ignore unrecognised values */
