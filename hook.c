@@ -145,7 +145,7 @@ static int hook_config_lookup_all(const char *key, const char *value,
 			struct strmap_entry *e;
 
 			strmap_for_each_entry(&data->event_hooks, &iter, e)
-				unsorted_string_list_remove(e->value, hook_name);
+				unsorted_string_list_remove(e->value, hook_name, 0);
 		} else {
 			struct string_list *hooks =
 				strmap_get(&data->event_hooks, value);
@@ -157,7 +157,7 @@ static int hook_config_lookup_all(const char *key, const char *value,
 			}
 
 			/* Re-insert if necessary to preserve last-seen order. */
-			unsorted_string_list_remove(hooks, hook_name);
+			unsorted_string_list_remove(hooks, hook_name, 0);
 			string_list_append(hooks, hook_name);
 		}
 	} else if (!strcmp(subkey, "command")) {
@@ -175,7 +175,7 @@ static int hook_config_lookup_all(const char *key, const char *value,
 			break;
 		case 1: /* enabled: undo a prior disabled entry */
 			unsorted_string_list_remove(&data->disabled_hooks,
-						    hook_name);
+						    hook_name, 0);
 			break;
 		default:
 			break; /* ignore unrecognised values */
@@ -224,7 +224,8 @@ static void build_hook_config_map(struct repository *r, struct strmap *cache)
 	/* Construct the cache from parsed configs. */
 	strmap_for_each_entry(&cb_data.event_hooks, &iter, e) {
 		struct string_list *hook_names = e->value;
-		struct string_list *hooks = xcalloc(1, sizeof(*hooks));
+		struct string_list *hooks;
+		CALLOC_ARRAY(hooks, 1);
 
 		string_list_init_dup(hooks);
 
@@ -278,7 +279,7 @@ static struct strmap *get_hook_config_cache(struct repository *r)
 		 * it just once on the first call.
 		 */
 		if (!r->hook_config_cache) {
-			r->hook_config_cache = xcalloc(1, sizeof(*cache));
+			CALLOC_ARRAY(r->hook_config_cache, 1);
 			strmap_init(r->hook_config_cache);
 			build_hook_config_map(r, r->hook_config_cache);
 		}
@@ -308,12 +309,19 @@ static void list_hooks_add_configured(struct repository *r,
 	for (size_t i = 0; configured_hooks && i < configured_hooks->nr; i++) {
 		const char *friendly_name = configured_hooks->items[i].string;
 		const char *command = configured_hooks->items[i].util;
-		struct hook *hook = xcalloc(1, sizeof(struct hook));
+		struct hook *hook;
+		CALLOC_ARRAY(hook, 1);
 
-		if (options && options->feed_pipe_cb_data_alloc)
+		/*
+		 * When provided, the alloc/free callbacks are always provided
+		 * together, so use them to alloc/free the internal hook state.
+		 */
+		if (options && options->feed_pipe_cb_data_alloc) {
 			hook->feed_pipe_cb_data =
 				options->feed_pipe_cb_data_alloc(
 					options->feed_pipe_ctx);
+			hook->data_free = options->feed_pipe_cb_data_free;
+		}
 
 		hook->kind = HOOK_CONFIGURED;
 		hook->u.configured.friendly_name = xstrdup(friendly_name);
@@ -398,13 +406,16 @@ static int pick_next_hook(struct child_process *cp,
 	cp->dir = hook_cb->options->dir;
 
 	/* Add hook exec paths or commands */
-	if (h->kind == HOOK_TRADITIONAL) {
+	switch (h->kind) {
+	case HOOK_TRADITIONAL:
 		strvec_push(&cp->args, h->u.traditional.path);
-	} else if (h->kind == HOOK_CONFIGURED) {
+		break;
+	case HOOK_CONFIGURED:
 		/* to enable oneliners, let config-specified hooks run in shell. */
 		cp->use_shell = true;
 		strvec_push(&cp->args, h->u.configured.command);
-	} else {
+		break;
+	default:
 		BUG("unknown hook kind");
 	}
 
