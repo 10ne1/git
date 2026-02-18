@@ -151,7 +151,7 @@ static int hook_config_lookup_all(const char *key, const char *value,
 				strmap_get(&data->event_hooks, value);
 
 			if (!hooks) {
-				hooks = xcalloc(1, sizeof(*hooks));
+				CALLOC_ARRAY(hooks, 1);
 				string_list_init_dup(hooks);
 				strmap_put(&data->event_hooks, value, hooks);
 			}
