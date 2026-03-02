@@ -934,6 +934,9 @@ static int run_receive_hook(struct command *commands,
 	int saved_stderr = -1;
 	int ret;
 
+	if (!hook_exists(the_repository, hook_name))
+		return 0;
+
 	/* if there are no valid commands, don't invoke the hook at all. */
 	while (iter && skip_broken && (iter->error_string || iter->did_not_exist))
 		iter = iter->next;
@@ -979,6 +982,9 @@ static int run_update_hook(struct command *cmd)
 	int sideband_async_started = 0;
 	int saved_stderr = -1;
 	int code;
+
+	if (!hook_exists(the_repository, "update"))
+		return 0;
 
 	strvec_pushl(&opt.args,
 		     cmd->ref_name,
@@ -1673,6 +1679,9 @@ static void run_update_post_hook(struct command *commands)
 	struct command *cmd;
 	int sideband_async_started = 0;
 	int saved_stderr = -1;
+
+	if (!hook_exists(the_repository, "post-update"))
+		return;
 
 	for (cmd = commands; cmd; cmd = cmd->next) {
 		if (cmd->error_string || cmd->did_not_exist)
