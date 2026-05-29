@@ -1151,74 +1151,142 @@ static int read_proc_receive_report(struct packet_reader *reader,
 	return code;
 }
 
-static int run_proc_receive_hook(struct command *commands,
-				 const struct string_list *push_options)
-{
-	struct child_process proc = CHILD_PROCESS_INIT;
-	struct async muxer;
-	struct command *cmd;
+/*
+ * State for the proc-receive bidirectional protocol, shared between the
+ * feed_pipe (write) and consume_output (read) callbacks via
+ * run_hooks_opt.feed_pipe_ctx. The two callbacks take turns advancing 'phase':
+ *
+ *   WRITE_VERSION -> READ_VERSION -> WRITE_COMMANDS -> READ_REPORT -> DONE
+ *
+ * 'commands'/'push_options' are inputs; 'errmsg' and 'code' carry the protocol
+ * result back to run_proc_receive_hook().
+ */
+struct proc_receive_state {
+	enum proc_receive_phase {
+		PROC_RECEIVE_WRITE_VERSION = 0,
+		PROC_RECEIVE_READ_VERSION,
+		PROC_RECEIVE_WRITE_COMMANDS,
+		PROC_RECEIVE_READ_REPORT,
+		PROC_RECEIVE_DONE,
+	} phase;
+	struct command *commands;
+	const struct string_list *push_options;
 	struct packet_reader reader;
-	struct strbuf cap = STRBUF_INIT;
-	struct strbuf errmsg = STRBUF_INIT;
-	int hook_use_push_options = 0;
-	int version = 0;
+	int reader_initialized;
+	int hook_use_push_options;
+	int version;
+	struct strbuf errmsg;
 	int code;
-	const char *hook_path = find_hook(the_repository, "proc-receive");
+};
 
-	if (!hook_path) {
-		rp_error("cannot find hook 'proc-receive'");
-		return -1;
+/* feed_pipe callback: writes the version line, then the commands/options. */
+static int proc_receive_feed(int child_in, void *pp_cb, void *pp_task_cb UNUSED)
+{
+	struct hook_cb_data *hook_cb = pp_cb;
+	struct proc_receive_state *state = hook_cb->options->feed_pipe_ctx;
+	struct command *cmd;
+	int code;
+
+	switch (state->phase) {
+	case PROC_RECEIVE_WRITE_VERSION: {
+		struct strbuf cap = STRBUF_INIT;
+
+		if (use_atomic)
+			strbuf_addstr(&cap, " atomic");
+		if (use_push_options)
+			strbuf_addstr(&cap, " push-options");
+		if (cap.len) {
+			code = packet_write_fmt_gently(child_in, "version=1%c%s\n",
+						       '\0', cap.buf + 1);
+			strbuf_release(&cap);
+		} else {
+			code = packet_write_fmt_gently(child_in, "version=1\n");
+		}
+		if (!code)
+			code = packet_flush_gently(child_in);
+		if (code) {
+			strbuf_addstr(&state->errmsg,
+				      "fail to negotiate version with proc-receive hook");
+			state->code = -1;
+			state->phase = PROC_RECEIVE_DONE;
+			return IO_PUMP_DONE;
+		}
+		state->phase = PROC_RECEIVE_READ_VERSION;
+		return IO_PUMP_YIELD;
+	}
+	case PROC_RECEIVE_WRITE_COMMANDS:
+		code = 0;
+		for (cmd = state->commands; cmd; cmd = cmd->next) {
+			if (!cmd->run_proc_receive || cmd->skip_update ||
+			    cmd->error_string)
+				continue;
+			code = packet_write_fmt_gently(child_in, "%s %s %s",
+						       oid_to_hex(&cmd->old_oid),
+						       oid_to_hex(&cmd->new_oid),
+						       cmd->ref_name);
+			if (code)
+				break;
+		}
+		if (!code)
+			code = packet_flush_gently(child_in);
+		if (code) {
+			strbuf_addstr(&state->errmsg,
+				      "fail to write commands to proc-receive hook");
+			state->code = -1;
+			state->phase = PROC_RECEIVE_DONE;
+			return IO_PUMP_DONE;
+		}
+
+		if (state->hook_use_push_options) {
+			struct string_list_item *item;
+
+			for_each_string_list_item(item, state->push_options) {
+				code = packet_write_fmt_gently(child_in, "%s",
+							       item->string);
+				if (code)
+					break;
+			}
+			if (!code)
+				code = packet_flush_gently(child_in);
+			if (code) {
+				strbuf_addstr(&state->errmsg,
+					      "fail to write push-options to proc-receive hook");
+				state->code = -1;
+				state->phase = PROC_RECEIVE_DONE;
+				return IO_PUMP_DONE;
+			}
+		}
+
+		state->phase = PROC_RECEIVE_READ_REPORT;
+		return IO_PUMP_DONE; /* done feeding: close stdin, read report */
+	default:
+		BUG("proc_receive_feed called in read phase %d", state->phase);
+	}
+}
+
+/* consume_output callback: reads the version response, then the report. */
+static int proc_receive_consume(int child_out, void *pp_cb,
+				void *pp_task_cb UNUSED)
+{
+	struct hook_cb_data *hook_cb = pp_cb;
+	struct proc_receive_state *state = hook_cb->options->feed_pipe_ctx;
+
+	if (!state->reader_initialized) {
+		packet_reader_init(&state->reader, child_out, NULL, 0,
+				   PACKET_READ_CHOMP_NEWLINE |
+				   PACKET_READ_GENTLE_ON_EOF);
+		state->reader_initialized = 1;
 	}
 
-	strvec_push(&proc.args, hook_path);
-	proc.in = -1;
-	proc.out = -1;
-	proc.trace2_hook_name = "proc-receive";
+	switch (state->phase) {
+	case PROC_RECEIVE_READ_VERSION: {
+		int code = 0;
 
-	if (use_sideband) {
-		memset(&muxer, 0, sizeof(muxer));
-		muxer.proc = copy_to_sideband;
-		muxer.in = -1;
-		code = start_async(&muxer);
-		if (code)
-			return code;
-		proc.err = muxer.in;
-	} else {
-		proc.err = 0;
-	}
-
-	code = start_command(&proc);
-	if (code) {
-		if (use_sideband)
-			finish_async(&muxer);
-		return code;
-	}
-
-	sigchain_push(SIGPIPE, SIG_IGN);
-
-	/* Version negotiaton */
-	packet_reader_init(&reader, proc.out, NULL, 0,
-			   PACKET_READ_CHOMP_NEWLINE |
-			   PACKET_READ_GENTLE_ON_EOF);
-	if (use_atomic)
-		strbuf_addstr(&cap, " atomic");
-	if (use_push_options)
-		strbuf_addstr(&cap, " push-options");
-	if (cap.len) {
-		code = packet_write_fmt_gently(proc.in, "version=1%c%s\n", '\0', cap.buf + 1);
-		strbuf_release(&cap);
-	} else {
-		code = packet_write_fmt_gently(proc.in, "version=1\n");
-	}
-	if (!code)
-		code = packet_flush_gently(proc.in);
-
-	if (!code)
 		for (;;) {
 			int linelen;
 			enum packet_read_status status;
 
-			status = packet_reader_read(&reader);
+			status = packet_reader_read(&state->reader);
 			if (status != PACKET_READ_NORMAL) {
 				/* Check whether proc-receive exited abnormally */
 				if (status == PACKET_READ_EOF)
@@ -1226,90 +1294,115 @@ static int run_proc_receive_hook(struct command *commands,
 				break;
 			}
 
-			if (reader.pktlen > 8 && starts_with(reader.line, "version=")) {
-				version = atoi(reader.line + 8);
-				linelen = strlen(reader.line);
-				if (linelen < reader.pktlen) {
-					const char *feature_list = reader.line + linelen + 1;
-					if (parse_feature_request(feature_list, "push-options"))
-						hook_use_push_options = 1;
+			if (state->reader.pktlen > 8 &&
+			    starts_with(state->reader.line, "version=")) {
+				state->version = atoi(state->reader.line + 8);
+				linelen = strlen(state->reader.line);
+				if (linelen < state->reader.pktlen) {
+					const char *feature_list =
+						state->reader.line + linelen + 1;
+					if (parse_feature_request(feature_list,
+								  "push-options"))
+						state->hook_use_push_options = 1;
 				}
 			}
 		}
 
-	if (code) {
-		strbuf_addstr(&errmsg, "fail to negotiate version with proc-receive hook");
-		goto cleanup;
-	}
-
-	switch (version) {
-	case 0:
-		/* fallthrough */
-	case 1:
-		break;
-	default:
-		strbuf_addf(&errmsg, "proc-receive version '%d' is not supported",
-			    version);
-		code = -1;
-		goto cleanup;
-	}
-
-	/* Send commands */
-	for (cmd = commands; cmd; cmd = cmd->next) {
-		if (!cmd->run_proc_receive || cmd->skip_update || cmd->error_string)
-			continue;
-		code = packet_write_fmt_gently(proc.in, "%s %s %s",
-					       oid_to_hex(&cmd->old_oid),
-					       oid_to_hex(&cmd->new_oid),
-					       cmd->ref_name);
-		if (code)
-			break;
-	}
-	if (!code)
-		code = packet_flush_gently(proc.in);
-	if (code) {
-		strbuf_addstr(&errmsg, "fail to write commands to proc-receive hook");
-		goto cleanup;
-	}
-
-	/* Send push options */
-	if (hook_use_push_options) {
-		struct string_list_item *item;
-
-		for_each_string_list_item(item, push_options) {
-			code = packet_write_fmt_gently(proc.in, "%s", item->string);
-			if (code)
-				break;
-		}
-		if (!code)
-			code = packet_flush_gently(proc.in);
 		if (code) {
-			strbuf_addstr(&errmsg,
-				      "fail to write push-options to proc-receive hook");
-			goto cleanup;
+			strbuf_addstr(&state->errmsg,
+				      "fail to negotiate version with proc-receive hook");
+			state->code = -1;
+			state->phase = PROC_RECEIVE_DONE;
+			return IO_PUMP_DONE;
 		}
+
+		switch (state->version) {
+		case 0:
+			/* fallthrough */
+		case 1:
+			break;
+		default:
+			strbuf_addf(&state->errmsg,
+				    "proc-receive version '%d' is not supported",
+				    state->version);
+			state->code = -1;
+			state->phase = PROC_RECEIVE_DONE;
+			return IO_PUMP_DONE;
+		}
+
+		state->phase = PROC_RECEIVE_WRITE_COMMANDS;
+		return IO_PUMP_YIELD; /* hand back to feed_pipe for commands */
+	}
+	case PROC_RECEIVE_READ_REPORT:
+		state->code = read_proc_receive_report(&state->reader,
+						       state->commands,
+						       &state->errmsg);
+		state->phase = PROC_RECEIVE_DONE;
+		return IO_PUMP_DONE;
+	case PROC_RECEIVE_DONE:
+		return IO_PUMP_DONE;
+	default:
+		BUG("proc_receive_consume called in write phase %d", state->phase);
+	}
+}
+
+static int run_proc_receive_hook(struct command *commands,
+				 const struct string_list *push_options)
+{
+	struct run_hooks_opt opt = RUN_HOOKS_OPT_INIT_FORCE_SERIAL;
+	struct proc_receive_state state = {
+		.phase = PROC_RECEIVE_WRITE_VERSION,
+		.commands = commands,
+		.push_options = push_options,
+		.errmsg = STRBUF_INIT,
+	};
+	struct async sideband_async;
+	int sideband_async_started = 0;
+	int saved_stderr = -1;
+	int code;
+
+	/*
+	 * Keep producing the historical sideband error message here rather than
+	 * relying on run_hooks_opt()'s error_if_missing: the wording differs and
+	 * it must travel over the sideband via rp_error(). This is also the last
+	 * remaining caller that needs to know the hook exists up front.
+	 */
+	if (!hook_exists(the_repository, "proc-receive")) {
+		rp_error("cannot find hook 'proc-receive'");
+		return -1;
 	}
 
-	/* Read result from proc-receive */
-	code = read_proc_receive_report(&reader, commands, &errmsg);
+	opt.feed_pipe = proc_receive_feed;
+	opt.consume_output = proc_receive_consume;
+	opt.feed_pipe_ctx = &state;
 
-cleanup:
-	close(proc.in);
-	close(proc.out);
-	if (use_sideband)
-		finish_async(&muxer);
-	if (finish_command(&proc))
-		code = -1;
-	if (errmsg.len >0) {
-		char *p = errmsg.buf;
+	/*
+	 * Relay the hook's stderr over the sideband (when in use) like the other
+	 * receive hooks; its stdout carries the protocol and is driven by the
+	 * feed_pipe / consume_output callbacks above.
+	 */
+	prepare_sideband_async(&sideband_async, &saved_stderr, &sideband_async_started);
 
-		p += errmsg.len - 1;
+	code = run_hooks_opt(the_repository, "proc-receive", &opt);
+
+	finish_sideband_async(&sideband_async, saved_stderr, sideband_async_started);
+
+	/* Fold in a protocol-level failure that left the hook exiting 0. */
+	if (!code)
+		code = state.code;
+
+	/*
+	 * Report any protocol error only after the sideband muxer has drained,
+	 * so it is ordered after the hook's own stderr output.
+	 */
+	if (state.errmsg.len > 0) {
+		char *p = state.errmsg.buf + state.errmsg.len - 1;
+
 		if (*p == '\n')
 			*p = '\0';
-		rp_error("%s", errmsg.buf);
-		strbuf_release(&errmsg);
+		rp_error("%s", state.errmsg.buf);
 	}
-	sigchain_pop(SIGPIPE);
+	strbuf_release(&state.errmsg);
 
 	return code;
 }
