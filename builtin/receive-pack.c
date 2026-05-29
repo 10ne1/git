@@ -1151,53 +1151,41 @@ static int read_proc_receive_report(struct packet_reader *reader,
 	return code;
 }
 
-static int run_proc_receive_hook(struct command *commands,
-				 const struct string_list *push_options)
+/*
+ * Context for proc_receive_duplex(), passed in via run_hooks_opt.duplex_ctx.
+ * 'commands' and 'push_options' are inputs; 'errmsg' collects any protocol
+ * error to be reported by the caller once the sideband has drained.
+ */
+struct proc_receive_state {
+	struct command *commands;
+	const struct string_list *push_options;
+	struct strbuf errmsg;
+};
+
+/*
+ * Drive the bidirectional pktline protocol with the proc-receive hook over its
+ * stdin (child_in) and stdout (child_out): negotiate a version, send the
+ * commands and push-options, then read back the status report. Runs as the
+ * hook.h duplex callback, so SIGPIPE is already ignored by
+ * run_processes_parallel() and the fds are closed by it once we return.
+ */
+static int proc_receive_duplex(int child_in, int child_out,
+			       void *pp_cb, void *pp_task_cb UNUSED)
 {
-	struct child_process proc = CHILD_PROCESS_INIT;
-	struct async muxer;
+	struct hook_cb_data *hook_cb = pp_cb;
+	struct proc_receive_state *state = hook_cb->options->duplex_ctx;
+	struct command *commands = state->commands;
+	const struct string_list *push_options = state->push_options;
+	struct strbuf *errmsg = &state->errmsg;
 	struct command *cmd;
 	struct packet_reader reader;
 	struct strbuf cap = STRBUF_INIT;
-	struct strbuf errmsg = STRBUF_INIT;
 	int hook_use_push_options = 0;
 	int version = 0;
 	int code;
-	const char *hook_path = find_hook(the_repository, "proc-receive");
-
-	if (!hook_path) {
-		rp_error("cannot find hook 'proc-receive'");
-		return -1;
-	}
-
-	strvec_push(&proc.args, hook_path);
-	proc.in = -1;
-	proc.out = -1;
-	proc.trace2_hook_name = "proc-receive";
-
-	if (use_sideband) {
-		memset(&muxer, 0, sizeof(muxer));
-		muxer.proc = copy_to_sideband;
-		muxer.in = -1;
-		code = start_async(&muxer);
-		if (code)
-			return code;
-		proc.err = muxer.in;
-	} else {
-		proc.err = 0;
-	}
-
-	code = start_command(&proc);
-	if (code) {
-		if (use_sideband)
-			finish_async(&muxer);
-		return code;
-	}
-
-	sigchain_push(SIGPIPE, SIG_IGN);
 
 	/* Version negotiaton */
-	packet_reader_init(&reader, proc.out, NULL, 0,
+	packet_reader_init(&reader, child_out, NULL, 0,
 			   PACKET_READ_CHOMP_NEWLINE |
 			   PACKET_READ_GENTLE_ON_EOF);
 	if (use_atomic)
@@ -1205,13 +1193,13 @@ static int run_proc_receive_hook(struct command *commands,
 	if (use_push_options)
 		strbuf_addstr(&cap, " push-options");
 	if (cap.len) {
-		code = packet_write_fmt_gently(proc.in, "version=1%c%s\n", '\0', cap.buf + 1);
+		code = packet_write_fmt_gently(child_in, "version=1%c%s\n", '\0', cap.buf + 1);
 		strbuf_release(&cap);
 	} else {
-		code = packet_write_fmt_gently(proc.in, "version=1\n");
+		code = packet_write_fmt_gently(child_in, "version=1\n");
 	}
 	if (!code)
-		code = packet_flush_gently(proc.in);
+		code = packet_flush_gently(child_in);
 
 	if (!code)
 		for (;;) {
@@ -1238,8 +1226,8 @@ static int run_proc_receive_hook(struct command *commands,
 		}
 
 	if (code) {
-		strbuf_addstr(&errmsg, "fail to negotiate version with proc-receive hook");
-		goto cleanup;
+		strbuf_addstr(errmsg, "fail to negotiate version with proc-receive hook");
+		return -1;
 	}
 
 	switch (version) {
@@ -1248,17 +1236,16 @@ static int run_proc_receive_hook(struct command *commands,
 	case 1:
 		break;
 	default:
-		strbuf_addf(&errmsg, "proc-receive version '%d' is not supported",
+		strbuf_addf(errmsg, "proc-receive version '%d' is not supported",
 			    version);
-		code = -1;
-		goto cleanup;
+		return -1;
 	}
 
 	/* Send commands */
 	for (cmd = commands; cmd; cmd = cmd->next) {
 		if (!cmd->run_proc_receive || cmd->skip_update || cmd->error_string)
 			continue;
-		code = packet_write_fmt_gently(proc.in, "%s %s %s",
+		code = packet_write_fmt_gently(child_in, "%s %s %s",
 					       oid_to_hex(&cmd->old_oid),
 					       oid_to_hex(&cmd->new_oid),
 					       cmd->ref_name);
@@ -1266,10 +1253,10 @@ static int run_proc_receive_hook(struct command *commands,
 			break;
 	}
 	if (!code)
-		code = packet_flush_gently(proc.in);
+		code = packet_flush_gently(child_in);
 	if (code) {
-		strbuf_addstr(&errmsg, "fail to write commands to proc-receive hook");
-		goto cleanup;
+		strbuf_addstr(errmsg, "fail to write commands to proc-receive hook");
+		return -1;
 	}
 
 	/* Send push options */
@@ -1277,39 +1264,74 @@ static int run_proc_receive_hook(struct command *commands,
 		struct string_list_item *item;
 
 		for_each_string_list_item(item, push_options) {
-			code = packet_write_fmt_gently(proc.in, "%s", item->string);
+			code = packet_write_fmt_gently(child_in, "%s", item->string);
 			if (code)
 				break;
 		}
 		if (!code)
-			code = packet_flush_gently(proc.in);
+			code = packet_flush_gently(child_in);
 		if (code) {
-			strbuf_addstr(&errmsg,
+			strbuf_addstr(errmsg,
 				      "fail to write push-options to proc-receive hook");
-			goto cleanup;
+			return -1;
 		}
 	}
 
 	/* Read result from proc-receive */
-	code = read_proc_receive_report(&reader, commands, &errmsg);
+	return read_proc_receive_report(&reader, commands, errmsg);
+}
 
-cleanup:
-	close(proc.in);
-	close(proc.out);
-	if (use_sideband)
-		finish_async(&muxer);
-	if (finish_command(&proc))
-		code = -1;
-	if (errmsg.len >0) {
-		char *p = errmsg.buf;
+static int run_proc_receive_hook(struct command *commands,
+				 const struct string_list *push_options)
+{
+	struct run_hooks_opt opt = RUN_HOOKS_OPT_INIT_FORCE_SERIAL;
+	struct proc_receive_state state = {
+		.commands = commands,
+		.push_options = push_options,
+		.errmsg = STRBUF_INIT,
+	};
+	struct async sideband_async;
+	int sideband_async_started = 0;
+	int saved_stderr = -1;
+	int code;
 
-		p += errmsg.len - 1;
+	/*
+	 * Keep producing the historical sideband error message here rather than
+	 * relying on run_hooks_opt()'s error_if_missing: the wording differs and
+	 * it must travel over the sideband via rp_error(). This is also the last
+	 * remaining caller that needs to know the hook exists up front.
+	 */
+	if (!hook_exists(the_repository, "proc-receive")) {
+		rp_error("cannot find hook 'proc-receive'");
+		return -1;
+	}
+
+	opt.duplex = proc_receive_duplex;
+	opt.duplex_ctx = &state;
+
+	/*
+	 * Relay the hook's stderr over the sideband (when in use) like the other
+	 * receive hooks; its stdout carries the protocol and is consumed by
+	 * proc_receive_duplex().
+	 */
+	prepare_sideband_async(&sideband_async, &saved_stderr, &sideband_async_started);
+
+	code = run_hooks_opt(the_repository, "proc-receive", &opt);
+
+	finish_sideband_async(&sideband_async, saved_stderr, sideband_async_started);
+
+	/*
+	 * Report any protocol error only after the sideband muxer has drained,
+	 * so it is ordered after the hook's own stderr output.
+	 */
+	if (state.errmsg.len > 0) {
+		char *p = state.errmsg.buf + state.errmsg.len - 1;
+
 		if (*p == '\n')
 			*p = '\0';
-		rp_error("%s", errmsg.buf);
-		strbuf_release(&errmsg);
+		rp_error("%s", state.errmsg.buf);
 	}
-	sigchain_pop(SIGPIPE);
+	strbuf_release(&state.errmsg);
 
 	return code;
 }
