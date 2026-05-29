@@ -93,6 +93,35 @@ setup_upstream_and_workbench
 # Run test cases for 'proc-receive' hook on local file protocol.
 run_proc_receive_hook_test local
 
+# A self-contained check that 'proc-receive' is also resolved (and its
+# bidirectional protocol driven) when defined through configuration
+# (hook.<name>.event = proc-receive) rather than as a hook file. This
+# exercises the hook.h resolution + duplex path with no hook file present.
+test_expect_success 'proc-receive: works as a config-defined hook' '
+	test_when_finished "rm -rf cfg-upstream.git cfg-work" &&
+	git init --bare cfg-upstream.git &&
+	git init cfg-work &&
+	create_commits_in cfg-work M &&
+	git -C cfg-work push ../cfg-upstream.git HEAD:refs/heads/main &&
+
+	git -C cfg-upstream.git config receive.procReceiveRefs refs/for &&
+	git -C cfg-upstream.git config hook.proc.event proc-receive &&
+	git -C cfg-upstream.git config hook.proc.command \
+		"test-tool proc-receive -v -r \"ok refs/for/main/topic\"" &&
+	test_path_is_missing cfg-upstream.git/hooks/proc-receive &&
+
+	git -C cfg-work push ../cfg-upstream.git HEAD:refs/for/main/topic \
+		>out 2>&1 &&
+	grep "remote: proc-receive< .* refs/for/main/topic" out &&
+	grep "remote: proc-receive> ok refs/for/main/topic" out &&
+	grep "new reference.*HEAD -> refs/for/main/topic" out &&
+
+	# The configured hook handled the special ref; receive-pack did not
+	# create it on its own.
+	test_must_fail git -C cfg-upstream.git \
+		rev-parse --verify refs/for/main/topic
+'
+
 ROOT_PATH="$PWD"
 . "$TEST_DIRECTORY"/lib-gpg.sh
 . "$TEST_DIRECTORY"/lib-httpd.sh
