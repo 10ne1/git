@@ -122,6 +122,35 @@ test_expect_success 'proc-receive: works as a config-defined hook' '
 		rev-parse --verify refs/for/main/topic
 '
 
+# 'proc-receive' drives a bidirectional protocol, so only one hook can be run
+# for it; resolving both a hook file and a configured hook is ambiguous and
+# must be rejected rather than replaying the exchange twice.
+test_expect_success 'proc-receive: refuses multiple configured hooks' '
+	test_when_finished "rm -rf multi-upstream.git multi-work" &&
+	git init --bare multi-upstream.git &&
+	git init multi-work &&
+	create_commits_in multi-work M &&
+	git -C multi-work push ../multi-upstream.git HEAD:refs/heads/main &&
+
+	git -C multi-upstream.git config receive.procReceiveRefs refs/for &&
+	# A hook file ...
+	test_hook -C multi-upstream.git proc-receive <<-\EOF &&
+	test-tool proc-receive -v -r "ok refs/for/main/topic"
+	EOF
+	# ... and a configured hook for the same event.
+	git -C multi-upstream.git config hook.proc.event proc-receive &&
+	git -C multi-upstream.git config hook.proc.command \
+		"test-tool proc-receive -v -r \"ok refs/for/main/topic\"" &&
+
+	test_must_fail git -C multi-work push ../multi-upstream.git \
+		HEAD:refs/for/main/topic >out 2>&1 &&
+	grep "only a single .proc-receive. hook is supported" out &&
+
+	# Nothing was applied.
+	test_must_fail git -C multi-upstream.git \
+		rev-parse --verify refs/for/main/topic
+'
+
 ROOT_PATH="$PWD"
 . "$TEST_DIRECTORY"/lib-gpg.sh
 . "$TEST_DIRECTORY"/lib-httpd.sh

@@ -558,19 +558,33 @@ struct string_list *list_hooks(struct repository *r, const char *hookname,
 	return hook_head;
 }
 
+/*
+ * A hook resolved by list_hooks() is "enabled" when it is a traditional hook
+ * (always runnable) or a configured hook that is not disabled (neither the
+ * named hook nor its event has been turned off).
+ */
+static int hook_is_enabled(const struct hook *h)
+{
+	return h->kind == HOOK_TRADITIONAL ||
+	       (!h->u.configured.disabled && !h->u.configured.event_disabled);
+}
+
+/* Count the enabled hooks in an already-resolved list_hooks() result. */
+static int count_enabled_hooks(const struct string_list *hooks)
+{
+	int count = 0;
+
+	for (size_t i = 0; i < hooks->nr; i++)
+		if (hook_is_enabled(hooks->items[i].util))
+			count++;
+	return count;
+}
+
 int hook_exists(struct repository *r, const char *name)
 {
 	struct string_list *hooks = list_hooks(r, name, NULL);
-	int exists = 0;
+	int exists = count_enabled_hooks(hooks) > 0;
 
-	for (size_t i = 0; i < hooks->nr; i++) {
-		struct hook *h = hooks->items[i].util;
-		if (h->kind == HOOK_TRADITIONAL ||
-		    (!h->u.configured.disabled && !h->u.configured.event_disabled)) {
-			exists = 1;
-			break;
-		}
-	}
 	string_list_clear_func(hooks, hook_free);
 	free(hooks);
 	return exists;
@@ -850,6 +864,21 @@ int run_hooks_opt(struct repository *r, const char *hook_name,
 		if (options->error_if_missing)
 			ret = error("cannot find a hook named %s", hook_name);
 		goto cleanup;
+	}
+
+	/*
+	 * A bidirectional protocol can only be driven against a single hook;
+	 * running it more than once would replay the exchange and corrupt the
+	 * protocol. Reject the ambiguous configuration rather than guess.
+	 */
+	if (options->consume_output) {
+		int n = count_enabled_hooks(cb_data.hook_command_list);
+		if (n > 1) {
+			ret = error("only a single '%s' hook is supported because "
+				    "it speaks a bidirectional protocol, but %d "
+				    "are configured", hook_name, n);
+			goto cleanup;
+		}
 	}
 
 	run_processes_parallel(&opts);
