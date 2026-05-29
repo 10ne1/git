@@ -257,14 +257,8 @@ void hook_cache_clear(struct strmap *cache);
 bool is_known_hook(const char *name);
 
 /**
- * Returns the path to the hook file, or NULL if the hook is missing
- * or disabled. Note that this points to static storage that will be
- * overwritten by further calls to find_hook and run_hook_*.
- */
-const char *find_hook(struct repository *r, const char *name);
-
-/**
- * A boolean version of find_hook()
+ * Returns true if the named hook exists (and is enabled) for repository `r`,
+ * whether it is a traditional hook in the hooks directory or a configured one.
  */
 int hook_exists(struct repository *r, const char *hookname);
 
