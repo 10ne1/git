@@ -162,6 +162,33 @@ struct run_hooks_opt {
 	 * Must always be provided when `feed_pipe_cb_data_alloc` is provided.
 	 */
 	hook_data_free_fn feed_pipe_cb_data_free;
+
+	/**
+	 * Callback to drive a synchronous bidirectional protocol with the hook.
+	 *
+	 * Unlike `feed_pipe`, which only streams data into the hook's stdin,
+	 * this hands the callback both the hook's stdin and stdout fds so it
+	 * can write requests and read responses (e.g. the pktline exchange of
+	 * the 'proc-receive' hook). The hook's stdout is kept separate from its
+	 * stderr (i.e. not redirected) so the protocol stream stays clean.
+	 *
+	 * It is invoked exactly once and runs to completion before the hook is
+	 * reaped, so it requires serial execution: use
+	 * RUN_HOOKS_OPT_INIT_FORCE_SERIAL. It is mutually exclusive with
+	 * `feed_pipe` and `path_to_stdin`.
+	 */
+	duplex_fn duplex;
+
+	/**
+	 * Opaque data pointer used to pass context to `duplex`.
+	 *
+	 * It can be accessed via the first callback arg 'pp_cb':
+	 * ((struct hook_cb_data *) pp_cb)->options->duplex_ctx;
+	 *
+	 * The caller is responsible for managing the memory for this data.
+	 * Only useful when using `run_hooks_opt.duplex`, otherwise ignore it.
+	 */
+	void *duplex_ctx;
 };
 
 /**

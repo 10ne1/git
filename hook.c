@@ -604,7 +604,20 @@ static int pick_next_hook(struct child_process *cp,
 		cp->in = -1;
 	}
 
+	if (hook_cb->options->duplex) {
+		cp->no_stdin = 0;
+		/* start_command() allocates both stdin and stdout pipes. */
+		cp->in = -1;
+		cp->out = -1;
+	}
+
 	cp->stdout_to_stderr = hook_cb->options->stdout_to_stderr;
+	/*
+	 * A duplex hook needs its stdout left intact for the protocol stream,
+	 * so it must not be merged into stderr.
+	 */
+	if (hook_cb->options->duplex)
+		cp->stdout_to_stderr = 0;
 	cp->trace2_hook_name = hook_cb->hook_name;
 	cp->dir = hook_cb->options->dir;
 
@@ -802,6 +815,7 @@ int run_hooks_opt(struct repository *r, const char *hook_name,
 		.get_next_task = pick_next_hook,
 		.start_failure = notify_start_failure,
 		.feed_pipe = options->feed_pipe,
+		.duplex = options->duplex,
 		.task_finished = notify_hook_finished,
 
 		.data = &cb_data,
@@ -812,6 +826,9 @@ int run_hooks_opt(struct repository *r, const char *hook_name,
 
 	if (options->path_to_stdin && options->feed_pipe)
 		BUG("options path_to_stdin and feed_pipe are mutually exclusive");
+
+	if (options->duplex && (options->feed_pipe || options->path_to_stdin))
+		BUG("options duplex is mutually exclusive with feed_pipe and path_to_stdin");
 
 	/*
 	 * Ensure cb_data copy and free functions are either provided together,

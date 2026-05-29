@@ -1482,6 +1482,9 @@ struct parallel_child {
 	struct child_process process;
 	struct strbuf err;
 	void *data;
+
+	/* result of the opts->duplex callback, if any */
+	int duplex_result;
 };
 
 static int child_is_working(const struct parallel_child *pp_child)
@@ -1566,6 +1569,11 @@ static void pp_init(struct parallel_processes *pp,
 
 	if (!opts->get_next_task)
 		BUG("you need to specify a get_next_task function");
+
+	if (opts->duplex && opts->feed_pipe)
+		BUG("duplex and feed_pipe are mutually exclusive");
+	if (opts->duplex && !opts->ungroup)
+		BUG("duplex requires serial (ungroup) execution");
 
 	CALLOC_ARRAY(pp->children, n);
 	if (!opts->ungroup)
@@ -1714,6 +1722,36 @@ static void pp_buffer_stdin(struct parallel_processes *pp,
 	}
 }
 
+static void pp_run_duplex(struct parallel_processes *pp,
+			  const struct run_process_parallel_opts *opts)
+{
+	for (size_t i = 0; i < opts->processes; i++) {
+		struct child_process *proc = &pp->children[i].process;
+
+		/*
+		 * A child is handled exactly once: child_is_receiving_input()
+		 * is true only until we tear down its stdin below.
+		 */
+		if (!child_is_receiving_input(&pp->children[i]))
+			continue;
+
+		/*
+		 * Drive the whole synchronous bidirectional exchange, then tear
+		 * down both pipe ends. Closing stdin lets the child see EOF and
+		 * the next pp_collect_finished() reap it (process.in == 0 makes
+		 * child_is_ready_for_cleanup() true).
+		 */
+		pp->children[i].duplex_result =
+			opts->duplex(proc->in, proc->out, opts->data,
+				     pp->children[i].data);
+		close(proc->in);
+		proc->in = 0;
+		if (proc->out > 0)
+			close(proc->out);
+		proc->out = -1;
+	}
+}
+
 static void pp_buffer_io(struct parallel_processes *pp,
 			 const struct run_process_parallel_opts *opts,
 			 int timeout)
@@ -1810,6 +1848,14 @@ static int pp_collect_finished(struct parallel_processes *pp,
 
 		code = finish_command(&pp->children[i].process);
 
+		/*
+		 * For a duplex child, fold the protocol result into the exit
+		 * status so a protocol-level failure is reported even when the
+		 * child itself exited successfully.
+		 */
+		if (opts->duplex && !code)
+			code = pp->children[i].duplex_result;
+
 		if (opts->task_finished)
 			code = opts->task_finished(code, opts->ungroup ? NULL :
 						   &pp->children[i].err, opts->data,
@@ -1866,7 +1912,10 @@ static void pp_handle_child_IO(struct parallel_processes *pp,
 				int timeout)
 {
 	if (opts->ungroup) {
-		pp_buffer_stdin(pp, opts);
+		if (opts->duplex)
+			pp_run_duplex(pp, opts);
+		else
+			pp_buffer_stdin(pp, opts);
 		for (size_t i = 0; i < opts->processes; i++)
 			if (child_is_ready_for_cleanup(&pp->children[i]))
 				pp->children[i].state = GIT_CP_WAIT_CLEANUP;

@@ -439,6 +439,27 @@ typedef int (*feed_pipe_fn)(int child_in,
 				void *pp_task_cb);
 
 /**
+ * This callback is invoked exactly once per child that was started with both
+ * its stdin and stdout connected to pipes (child_process.in < 0 and
+ * child_process.out < 0). It is handed both fds so it can drive a synchronous
+ * bidirectional protocol with the child: write requests to child_in and read
+ * responses from child_out. It runs to completion (it may block) before the
+ * child is reaped, so it is only usable for serial execution (one process).
+ *
+ * The callback owns neither fd: run_processes_parallel() closes both after it
+ * returns. It is mutually exclusive with feed_pipe.
+ *
+ * pp_cb is the callback cookie as passed into run_processes_parallel, and
+ * pp_task_cb is the callback cookie as passed into get_next_task_fn.
+ *
+ * The returned value is combined with the child's exit status and handed to
+ * task_finished; return 0 for success, non-zero on error.
+ */
+typedef int (*duplex_fn)(int child_in, int child_out,
+			 void *pp_cb,
+			 void *pp_task_cb);
+
+/**
  * This callback is called on every child process that finished processing.
  *
  * See run_processes_parallel() below for a discussion of the "struct
@@ -496,6 +517,13 @@ struct run_process_parallel_opts
 	 * special handling.
 	 */
 	feed_pipe_fn feed_pipe;
+
+	/*
+	 * duplex: see duplex_fn() above. This can be NULL to omit any special
+	 * handling. Requires serial execution (processes == 1) and is mutually
+	 * exclusive with feed_pipe.
+	 */
+	duplex_fn duplex;
 
 	/**
 	 * task_finished: See task_finished_fn() above. This can be
