@@ -162,6 +162,21 @@ struct run_hooks_opt {
 	 * Must always be provided when `feed_pipe_cb_data_alloc` is provided.
 	 */
 	hook_data_free_fn feed_pipe_cb_data_free;
+
+	/**
+	 * Read-side counterpart of `feed_pipe`, used to drive a synchronous
+	 * bidirectional protocol with the hook (e.g. the pktline exchange of
+	 * the 'proc-receive' hook). When set, the hook is started with both its
+	 * stdin and stdout connected to pipes, its stdout is kept separate from
+	 * its stderr (not redirected), and `feed_pipe` (writes) and
+	 * `consume_output` (reads) take turns via IO_PUMP_YIELD.
+	 *
+	 * Requires `feed_pipe` to be set and serial execution
+	 * (RUN_HOOKS_OPT_INIT_FORCE_SERIAL). The shared per-protocol state is
+	 * passed via `feed_pipe_ctx` and reachable from either callback as
+	 * ((struct hook_cb_data *) pp_cb)->options->feed_pipe_ctx.
+	 */
+	consume_output_fn consume_output;
 };
 
 /**

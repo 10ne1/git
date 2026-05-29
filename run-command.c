@@ -1482,6 +1482,13 @@ struct parallel_child {
 	struct child_process process;
 	struct strbuf err;
 	void *data;
+
+	/*
+	 * For bidirectional (feed_pipe + consume_output) children: which
+	 * direction is currently active. 0 = feeding the child's stdin,
+	 * 1 = reading the child's stdout. The two take turns.
+	 */
+	unsigned reading:1;
 };
 
 static int child_is_working(const struct parallel_child *pp_child)
@@ -1566,6 +1573,11 @@ static void pp_init(struct parallel_processes *pp,
 
 	if (!opts->get_next_task)
 		BUG("you need to specify a get_next_task function");
+
+	if (opts->consume_output && !opts->feed_pipe)
+		BUG("consume_output requires feed_pipe");
+	if (opts->consume_output && !opts->ungroup)
+		BUG("consume_output requires serial (ungroup) execution");
 
 	CALLOC_ARRAY(pp->children, n);
 	if (!opts->ungroup)
@@ -1671,6 +1683,8 @@ static int pp_start_one(struct parallel_processes *pp,
 
 	pp->nr_processes++;
 	pp->children[i].state = GIT_CP_WORKING;
+	/* Bidirectional children start by feeding the child's stdin. */
+	pp->children[i].reading = 0;
 	if (pp->pfd)
 		pp->pfd[i].fd = pp->children[i].process.err;
 	return 0;
@@ -1710,6 +1724,90 @@ static void pp_buffer_stdin(struct parallel_processes *pp,
 		if (ret) {
 			close(proc->in);
 			proc->in = 0;
+		}
+	}
+}
+
+/*
+ * Drive a bidirectional, strictly turn-based protocol with each child: at any
+ * moment a child is either feeding (writing its stdin) or reading (consuming
+ * its stdout), and the callbacks flip that direction via IO_PUMP_YIELD. Only
+ * the active direction's fd is polled, so the two never deadlock against each
+ * other. Used for the ungroup (serial) path when opts->consume_output is set.
+ */
+static void pp_stream_io(struct parallel_processes *pp,
+			 const struct run_process_parallel_opts *opts)
+{
+	for (size_t i = 0; i < opts->processes; i++) {
+		struct parallel_child *child = &pp->children[i];
+		struct child_process *proc = &child->process;
+		struct pollfd pfd;
+		int ret;
+
+		if (!child_is_working(child))
+			continue;
+
+		if (!child->reading) {
+			if (proc->in <= 0) {
+				/* nothing left to feed and not reading */
+				child->state = GIT_CP_WAIT_CLEANUP;
+				continue;
+			}
+			pfd.fd = proc->in;
+			pfd.events = POLLOUT;
+		} else {
+			if (proc->out <= 0) {
+				if (proc->in > 0) {
+					close(proc->in);
+					proc->in = 0;
+				}
+				child->state = GIT_CP_WAIT_CLEANUP;
+				continue;
+			}
+			pfd.fd = proc->out;
+			pfd.events = POLLIN;
+		}
+
+		while (poll(&pfd, 1, -1) < 0) {
+			if (errno == EINTR)
+				continue;
+			pp_cleanup(pp, opts);
+			die_errno("poll");
+		}
+
+		if (!child->reading) {
+			if (!(pfd.revents & (POLLOUT | POLLERR | POLLHUP)))
+				continue;
+			ret = opts->feed_pipe(proc->in, opts->data, child->data);
+			if (ret < 0)
+				die_errno("feed_pipe");
+			if (ret == IO_PUMP_YIELD) {
+				/* pause feeding, switch to reading; keep stdin */
+				child->reading = 1;
+			} else if (ret) { /* IO_PUMP_DONE */
+				close(proc->in);
+				proc->in = 0;
+				child->reading = 1;
+			}
+		} else {
+			if (!(pfd.revents & (POLLIN | POLLHUP | POLLERR)))
+				continue;
+			ret = opts->consume_output(proc->out, opts->data,
+						   child->data);
+			if (ret < 0)
+				die_errno("consume_output");
+			if (ret == IO_PUMP_YIELD) {
+				/* pause reading, switch to feeding; keep stdout */
+				child->reading = 0;
+			} else if (ret) { /* IO_PUMP_DONE: protocol complete */
+				close(proc->out);
+				proc->out = -1;
+				if (proc->in > 0) {
+					close(proc->in);
+					proc->in = 0;
+				}
+				child->state = GIT_CP_WAIT_CLEANUP;
+			}
 		}
 	}
 }
@@ -1866,10 +1964,15 @@ static void pp_handle_child_IO(struct parallel_processes *pp,
 				int timeout)
 {
 	if (opts->ungroup) {
-		pp_buffer_stdin(pp, opts);
-		for (size_t i = 0; i < opts->processes; i++)
-			if (child_is_ready_for_cleanup(&pp->children[i]))
-				pp->children[i].state = GIT_CP_WAIT_CLEANUP;
+		if (opts->consume_output) {
+			/* pp_stream_io() marks children for cleanup itself. */
+			pp_stream_io(pp, opts);
+		} else {
+			pp_buffer_stdin(pp, opts);
+			for (size_t i = 0; i < opts->processes; i++)
+				if (child_is_ready_for_cleanup(&pp->children[i]))
+					pp->children[i].state = GIT_CP_WAIT_CLEANUP;
+		}
 	} else {
 		pp_buffer_io(pp, opts, timeout);
 		pp_output(pp);

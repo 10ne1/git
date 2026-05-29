@@ -423,6 +423,20 @@ typedef int (*start_failure_fn)(struct strbuf *out,
 				void *pp_cb,
 				void *pp_task_cb);
 
+/*
+ * Return values for feed_pipe_fn and consume_output_fn.
+ *
+ * IO_PUMP_MORE / IO_PUMP_DONE are the only values a plain feed_pipe_fn (one
+ * that only streams stdin) ever needs. IO_PUMP_YIELD is used together with
+ * consume_output_fn to drive a bidirectional, strictly turn-based protocol
+ * (see consume_output in struct run_process_parallel_opts): it means "nothing
+ * more for this direction *right now*, hand off to the other direction" while
+ * leaving the pipe open. A negative value signals an error.
+ */
+#define IO_PUMP_MORE  0		/* more data this direction; call me again */
+#define IO_PUMP_DONE  1		/* this direction is finished */
+#define IO_PUMP_YIELD 2		/* yield to the other direction (pipe stays open) */
+
 /**
  * This callback is repeatedly called on every child process who requests
  * start_command() to create a pipe by setting child_process.in < 0.
@@ -431,12 +445,37 @@ typedef int (*start_failure_fn)(struct strbuf *out,
  * pp_task_cb is the callback cookie as passed into get_next_task_fn.
  *
  * Returns < 0 for error
- * Returns == 0 when there is more data to be fed (will be called again)
- * Returns > 0 when finished (child closed fd or no more data to be fed)
+ * Returns IO_PUMP_MORE when there is more data to be fed (will be called again)
+ * Returns IO_PUMP_DONE when finished (child closed fd or no more data to feed)
+ * Returns IO_PUMP_YIELD to pause feeding and hand off to consume_output_fn,
+ *         keeping the child's stdin open (only with consume_output set)
  */
 typedef int (*feed_pipe_fn)(int child_in,
 				void *pp_cb,
 				void *pp_task_cb);
+
+/**
+ * This callback is the read-side counterpart of feed_pipe_fn, used to drive a
+ * synchronous bidirectional protocol with a child started with both
+ * child_process.in < 0 and child_process.out < 0. It is called when the
+ * child's stdout has data ready (or has closed). The two directions take
+ * turns: feed_pipe_fn writes a request and returns IO_PUMP_YIELD, this reads
+ * the response and returns IO_PUMP_YIELD to hand control back, and so on. Its
+ * use requires serial execution and that feed_pipe is also set.
+ *
+ * pp_cb is the callback cookie as passed into run_processes_parallel, and
+ * pp_task_cb is the callback cookie as passed into get_next_task_fn.
+ *
+ * Returns < 0 for error
+ * Returns IO_PUMP_MORE when there is more output to read (will be called again)
+ * Returns IO_PUMP_DONE when the protocol is complete (both pipe ends closed,
+ *         the child is then reaped)
+ * Returns IO_PUMP_YIELD to pause reading and hand off to feed_pipe_fn, keeping
+ *         the child's stdout open
+ */
+typedef int (*consume_output_fn)(int child_out,
+				 void *pp_cb,
+				 void *pp_task_cb);
 
 /**
  * This callback is called on every child process that finished processing.
@@ -496,6 +535,13 @@ struct run_process_parallel_opts
 	 * special handling.
 	 */
 	feed_pipe_fn feed_pipe;
+
+	/*
+	 * consume_output: see consume_output_fn() above. This can be NULL to
+	 * omit any special handling. When set it requires feed_pipe to also be
+	 * set and serial (ungroup) execution.
+	 */
+	consume_output_fn consume_output;
 
 	/**
 	 * task_finished: See task_finished_fn() above. This can be
