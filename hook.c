@@ -23,7 +23,13 @@ bool is_known_hook(const char *name)
 	return false;
 }
 
-const char *find_hook(struct repository *r, const char *name)
+/*
+ * Returns the path to the hook file, or NULL if the hook is missing or
+ * disabled. Note that this points to static storage that will be overwritten
+ * by further calls to find_hook and run_hook_*. Internal to hook.c; callers
+ * outside should resolve hooks via list_hooks() / run_hooks_opt() instead.
+ */
+static const char *find_hook(struct repository *r, const char *name)
 {
 	static struct strbuf path = STRBUF_INIT;
 
