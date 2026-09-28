@@ -602,9 +602,20 @@ static int pick_next_hook(struct child_process *cp,
 		cp->no_stdin = 0;
 		/* start_command() will allocate a pipe / stdin fd for us */
 		cp->in = -1;
+		/*
+		 * A duplex hook also gets a stdout pipe, whose read end is
+		 * handed to feed_pipe together with the stdin one.
+		 */
+		if (hook_cb->options->duplex)
+			cp->out = -1;
 	}
 
-	cp->stdout_to_stderr = hook_cb->options->stdout_to_stderr;
+	/*
+	 * A duplex hook's stdout carries the protocol stream, so it must be
+	 * left alone rather than merged into stderr.
+	 */
+	cp->stdout_to_stderr = hook_cb->options->stdout_to_stderr &&
+			       !hook_cb->options->duplex;
 	cp->trace2_hook_name = hook_cb->hook_name;
 	cp->dir = hook_cb->options->dir;
 
@@ -812,6 +823,15 @@ int run_hooks_opt(struct repository *r, const char *hook_name,
 
 	if (options->path_to_stdin && options->feed_pipe)
 		BUG("options path_to_stdin and feed_pipe are mutually exclusive");
+
+	if (options->duplex) {
+		if (!options->feed_pipe)
+			BUG("option duplex requires feed_pipe");
+		if (options->path_to_stdin)
+			BUG("options duplex and path_to_stdin are mutually exclusive");
+		if (jobs != 1)
+			BUG("option duplex requires serial execution");
+	}
 
 	/*
 	 * Ensure cb_data copy and free functions are either provided together,

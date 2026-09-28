@@ -162,6 +162,22 @@ struct run_hooks_opt {
 	 * Must always be provided when `feed_pipe_cb_data_alloc` is provided.
 	 */
 	hook_data_free_fn feed_pipe_cb_data_free;
+
+	/**
+	 * Hand the hook's stdout to `feed_pipe` along with its stdin, so the
+	 * callback can drive a synchronous bidirectional protocol with the
+	 * hook: write a request and read the answer back (e.g. the pktline
+	 * exchange of the 'proc-receive' hook).
+	 *
+	 * The hook's stdout is kept separate from its stderr (`stdout_to_stderr`
+	 * is forced off) so the protocol stream stays clean. The stderr can be
+	 * routed elsewhere by the caller, e.g. over the receive-pack sideband.
+	 *
+	 * Requires `feed_pipe`, and serial execution since the callback may
+	 * block waiting for the hook: use RUN_HOOKS_OPT_INIT_FORCE_SERIAL.
+	 * It is mutually exclusive with `path_to_stdin`.
+	 */
+	unsigned int duplex:1;
 };
 
 /**
