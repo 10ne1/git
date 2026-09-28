@@ -195,6 +195,23 @@ test_expect_success 'run_command listens to stdin' '
 	test_cmp expect actual
 '
 
+test_expect_success 'run_command hands the child stdout to feed_pipe' '
+	cat >expect <<-\EOF &&
+	preloaded output of a child
+	got: pong ping 1
+	got: pong ping 0
+	EOF
+
+	write_script duplex-script <<-\EOF &&
+	while read line
+	do
+		echo "pong $line"
+	done
+	EOF
+	test-tool run-command --ungroup run-command-duplex 1 ./duplex-script 2>actual &&
+	test_cmp expect actual
+'
+
 cat >expect <<-EOF
 preloaded output of a child
 asking for a quick stop

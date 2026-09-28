@@ -1659,6 +1659,14 @@ static int pp_start_one(struct parallel_processes *pp,
 		return 1;
 	}
 	if (!opts->ungroup) {
+		/*
+		 * Grouped output owns the child's stdout: it is merged into
+		 * the stderr pipe we de-interleave. A caller which asked for
+		 * a stdout pipe of its own (to read the child's answers back
+		 * from feed_pipe) can therefore only be served serially.
+		 */
+		if (pp->children[i].process.out == -1)
+			BUG("a child stdout pipe requires ungroup");
 		pp->children[i].process.err = -1;
 		pp->children[i].process.stdout_to_stderr = 1;
 	}
@@ -1688,6 +1696,22 @@ static int pp_start_one(struct parallel_processes *pp,
 	return 0;
 }
 
+/*
+ * Tear down the pipe ends we hold to a child, so it sees EOF on its stdin and
+ * is not left with a reader on its stdout. Clearing process.in also makes
+ * child_is_ready_for_cleanup() true, so the next pp_collect_finished() reaps
+ * the child.
+ */
+static void pp_close_child_pipes(struct child_process *proc)
+{
+	close(proc->in);
+	proc->in = 0;
+	if (proc->out > 0) {
+		close(proc->out);
+		proc->out = 0;
+	}
+}
+
 static void pp_buffer_stdin(struct parallel_processes *pp,
 			    const struct run_process_parallel_opts *opts)
 {
@@ -1704,8 +1728,7 @@ static void pp_buffer_stdin(struct parallel_processes *pp,
 		 * missing, so we just signal an EOF.
 		 */
 		if (!opts->feed_pipe) {
-			close(proc->in);
-			proc->in = 0;
+			pp_close_child_pipes(proc);
 			continue;
 		}
 
@@ -1714,16 +1737,21 @@ static void pp_buffer_stdin(struct parallel_processes *pp,
 		 *   ret < 0 means error
 		 *   ret == 0 means there is more data to be fed
 		 *   ret > 0 means feeding finished
+		 *
+		 * When the child was started with a stdout pipe as well, hand
+		 * it over so the callback can read the child's answers back
+		 * and drive a bidirectional exchange. Such a callback may
+		 * block until the exchange is over, that is only safe here,
+		 * in the serial path.
 		 */
-		ret = opts->feed_pipe(proc->in, -1, opts->data,
-				      pp->children[i].data);
+		ret = opts->feed_pipe(proc->in,
+				      proc->out > 0 ? proc->out : -1,
+				      opts->data, pp->children[i].data);
 		if (ret < 0)
 			die_errno("feed_pipe");
 
-		if (ret) {
-			close(proc->in);
-			proc->in = 0;
-		}
+		if (ret)
+			pp_close_child_pipes(proc);
 	}
 }
 

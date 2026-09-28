@@ -46,6 +46,35 @@ static int parallel_next(struct child_process *cp,
 	return 1;
 }
 
+/* Like parallel_next(), but asks for a stdout pipe and runs a single task. */
+static int duplex_next(struct child_process *cp,
+		       struct strbuf *err,
+		       void *cb,
+		       void **task_cb)
+{
+	struct child_process *d = cb;
+
+	if (number_callbacks >= 1)
+		return 0;
+
+	strvec_pushv(&cp->args, d->args.v);
+	cp->no_stdin = 0;
+	cp->in = -1;
+	cp->out = -1;
+	if (err)
+		strbuf_addstr(err, "preloaded output of a child\n");
+	else
+		fprintf(stderr, "preloaded output of a child\n");
+
+	number_callbacks++;
+
+	/* test_duplex_feed() will use this to count remaining requests */
+	*task_cb = xmalloc(sizeof(int));
+	*(int *)(*task_cb) = 2;
+
+	return 1;
+}
+
 static int no_job(struct child_process *cp UNUSED,
 		  struct strbuf *err,
 		  void *cb UNUSED,
@@ -102,6 +131,56 @@ static int test_stdin_pipe_feed(int hook_stdin_fd, int hook_stdout_fd UNUSED,
 	}
 
 	return !(*lines_remaining);
+}
+
+/* Read one '\n'-terminated line from 'fd'. Returns -1 at EOF. */
+static int read_line_from_fd(int fd, struct strbuf *out)
+{
+	strbuf_reset(out);
+	while (1) {
+		char ch;
+		ssize_t n = read_in_full(fd, &ch, 1);
+
+		if (n < 0)
+			die_errno("read");
+
+		if (!n)
+			return out->len ? 0 : -1;
+
+		if (ch == '\n')
+			return 0;
+
+		strbuf_addch(out, ch);
+	}
+}
+
+/*
+ * A feed_pipe callback which uses the child's stdout as well: it sends one
+ * request at a time and reads the answer back before sending the next one.
+ */
+static int test_duplex_feed(int child_in, int child_out,
+			    void *cb UNUSED, void *task_cb)
+{
+	int *lines_remaining = task_cb;
+	struct strbuf req = STRBUF_INIT;
+	struct strbuf resp = STRBUF_INIT;
+
+	if (child_out < 0)
+		die("feed_pipe was not handed the child's stdout");
+
+	while (*lines_remaining) {
+		strbuf_reset(&req);
+		strbuf_addf(&req, "ping %d\n", --(*lines_remaining));
+		if (write_in_full(child_in, req.buf, req.len) < 0)
+			die_errno("write");
+		if (read_line_from_fd(child_out, &resp) < 0)
+			die("no response from child");
+		fprintf(stderr, "got: %s\n", resp.buf);
+	}
+
+	strbuf_release(&req);
+	strbuf_release(&resp);
+	return 1;
 }
 
 struct testsuite {
@@ -515,6 +594,10 @@ int cmd__run_command(int argc, const char **argv)
 		opts.get_next_task = parallel_next;
 		opts.task_finished = task_finished_quiet;
 		opts.feed_pipe = test_stdin_pipe_feed;
+	} else if (!strcmp(argv[1], "run-command-duplex")) {
+		opts.get_next_task = duplex_next;
+		opts.task_finished = task_finished_quiet;
+		opts.feed_pipe = test_duplex_feed;
 	} else {
 		ret = 1;
 		fprintf(stderr, "check usage\n");
