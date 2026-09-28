@@ -2599,7 +2599,8 @@ struct transaction_feed_cb_data {
 	struct strbuf buf;
 };
 
-static int transaction_hook_feed_stdin(int hook_stdin_fd, void *pp_cb, void *pp_task_cb)
+static int transaction_hook_feed_stdin(int hook_stdin_fd, int hook_stdout_fd UNUSED,
+				       void *pp_cb, void *pp_task_cb)
 {
 	struct hook_cb_data *hook_cb = pp_cb;
 	struct ref_transaction *transaction = hook_cb->options->feed_pipe_ctx;

@@ -1296,7 +1296,8 @@ int update_head_with_reflog(const struct commit *old_head,
 	return ret;
 }
 
-static int pipe_from_strbuf(int hook_stdin_fd, void *pp_cb, void *pp_task_cb UNUSED)
+static int pipe_from_strbuf(int hook_stdin_fd, int hook_stdout_fd UNUSED,
+			    void *pp_cb, void *pp_task_cb UNUSED)
 {
 	struct hook_cb_data *hook_cb = pp_cb;
 	struct strbuf *to_pipe = hook_cb->options->feed_pipe_ctx;

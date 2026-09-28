@@ -1380,7 +1380,8 @@ struct feed_pre_push_hook_data {
 	const struct ref *refs;
 };
 
-static int pre_push_hook_feed_stdin(int hook_stdin_fd, void *pp_cb UNUSED, void *pp_task_cb)
+static int pre_push_hook_feed_stdin(int hook_stdin_fd, int hook_stdout_fd UNUSED,
+				    void *pp_cb UNUSED, void *pp_task_cb)
 {
 	struct feed_pre_push_hook_data *data = pp_task_cb;
 	const struct ref *r = data->refs;

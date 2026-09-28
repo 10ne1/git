@@ -827,7 +827,8 @@ struct receive_hook_feed_state {
 	struct strbuf buf;
 };
 
-static int feed_receive_hook_cb(int hook_stdin_fd, void *pp_cb UNUSED, void *pp_task_cb)
+static int feed_receive_hook_cb(int hook_stdin_fd, int hook_stdout_fd UNUSED,
+				void *pp_cb UNUSED, void *pp_task_cb)
 {
 	struct receive_hook_feed_state *state = pp_task_cb;
 	struct command *cmd = state->cmd;

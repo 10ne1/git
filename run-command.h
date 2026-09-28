@@ -436,6 +436,10 @@ typedef int (*start_failure_fn)(struct strbuf *out,
  * This callback is repeatedly called on every child process who requests
  * start_command() to create a pipe by setting child_process.in < 0.
  *
+ * child_in is the writable end of that pipe. child_out is the readable end
+ * of the child's stdout pipe, or -1 when the child's stdout was not piped
+ * back to us; callbacks which only feed the child can ignore it.
+ *
  * pp_cb is the callback cookie as passed into run_processes_parallel, and
  * pp_task_cb is the callback cookie as passed into get_next_task_fn.
  *
@@ -444,6 +448,7 @@ typedef int (*start_failure_fn)(struct strbuf *out,
  * Returns > 0 when finished (child closed fd or no more data to be fed)
  */
 typedef int (*feed_pipe_fn)(int child_in,
+				int child_out,
 				void *pp_cb,
 				void *pp_task_cb);
 

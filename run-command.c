@@ -1715,7 +1715,8 @@ static void pp_buffer_stdin(struct parallel_processes *pp,
 		 *   ret == 0 means there is more data to be fed
 		 *   ret > 0 means feeding finished
 		 */
-		ret = opts->feed_pipe(proc->in, opts->data, pp->children[i].data);
+		ret = opts->feed_pipe(proc->in, -1, opts->data,
+				      pp->children[i].data);
 		if (ret < 0)
 			die_errno("feed_pipe");
 
@@ -1759,7 +1760,7 @@ static void pp_buffer_io(struct parallel_processes *pp,
 		if (pp->pfd[2*i+1].revents & (POLLOUT | POLLHUP | POLLERR)) {
 			if (opts->feed_pipe) {
 				int ret = opts->feed_pipe(pp->children[i].process.in,
-							  opts->data,
+							  -1, opts->data,
 							  pp->children[i].data);
 				if (ret < 0)
 					die_errno("feed_pipe");

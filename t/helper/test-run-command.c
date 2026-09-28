@@ -82,7 +82,8 @@ static int task_finished_quiet(int result UNUSED,
 	return 0;
 }
 
-static int test_stdin_pipe_feed(int hook_stdin_fd, void *cb UNUSED, void *task_cb)
+static int test_stdin_pipe_feed(int hook_stdin_fd, int hook_stdout_fd UNUSED,
+				void *cb UNUSED, void *task_cb)
 {
 	int *lines_remaining = task_cb;
 
