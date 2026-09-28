@@ -563,17 +563,22 @@ static int hook_is_enabled(const struct hook *h)
 	       (!h->u.configured.disabled && !h->u.configured.event_disabled);
 }
 
+/* Count the enabled hooks in an already-resolved list_hooks() result. */
+static size_t count_enabled_hooks(const struct string_list *hooks)
+{
+	size_t count = 0;
+
+	for (size_t i = 0; i < hooks->nr; i++)
+		if (hook_is_enabled(hooks->items[i].util))
+			count++;
+	return count;
+}
+
 int hook_exists(struct repository *r, const char *name)
 {
 	struct string_list *hooks = list_hooks(r, name, NULL);
-	int exists = 0;
+	int exists = count_enabled_hooks(hooks) > 0;
 
-	for (size_t i = 0; i < hooks->nr; i++) {
-		if (hook_is_enabled(hooks->items[i].util)) {
-			exists = 1;
-			break;
-		}
-	}
 	string_list_clear_func(hooks, hook_free);
 	free(hooks);
 	return exists;
@@ -855,6 +860,25 @@ int run_hooks_opt(struct repository *r, const char *hook_name,
 		if (options->error_if_missing)
 			ret = error("cannot find a hook named %s", hook_name);
 		goto cleanup;
+	}
+
+	/*
+	 * A bidirectional exchange can only be driven against a single hook:
+	 * running a second one would replay the request/response protocol from
+	 * scratch and corrupt it. Reject the ambiguous configuration (e.g. a
+	 * hook file plus a hook.<name>.event = <hook_name>) rather than guess
+	 * which one the user meant.
+	 */
+	if (options->duplex) {
+		size_t n = count_enabled_hooks(cb_data.hook_command_list);
+
+		if (n > 1) {
+			ret = error(_("only a single '%s' hook is supported "
+				      "because it speaks a bidirectional "
+				      "protocol, but %"PRIuMAX" are configured"),
+				    hook_name, (uintmax_t)n);
+			goto cleanup;
+		}
 	}
 
 	run_processes_parallel(&opts);
