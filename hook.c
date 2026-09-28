@@ -552,15 +552,24 @@ struct string_list *list_hooks(struct repository *r, const char *hookname,
 	return hook_head;
 }
 
+/*
+ * A hook resolved by list_hooks() is "enabled" when it is a traditional hook
+ * (always runnable) or a configured hook which has not been turned off, either
+ * by name or through its event.
+ */
+static int hook_is_enabled(const struct hook *h)
+{
+	return h->kind == HOOK_TRADITIONAL ||
+	       (!h->u.configured.disabled && !h->u.configured.event_disabled);
+}
+
 int hook_exists(struct repository *r, const char *name)
 {
 	struct string_list *hooks = list_hooks(r, name, NULL);
 	int exists = 0;
 
 	for (size_t i = 0; i < hooks->nr; i++) {
-		struct hook *h = hooks->items[i].util;
-		if (h->kind == HOOK_TRADITIONAL ||
-		    (!h->u.configured.disabled && !h->u.configured.event_disabled)) {
+		if (hook_is_enabled(hooks->items[i].util)) {
 			exists = 1;
 			break;
 		}
@@ -583,8 +592,7 @@ static int pick_next_hook(struct child_process *cp,
 		if (hook_cb->hook_to_run_index >= hook_list->nr)
 			return 0;
 		h = hook_list->items[hook_cb->hook_to_run_index++].util;
-	} while (h->kind == HOOK_CONFIGURED &&
-		 (h->u.configured.disabled || h->u.configured.event_disabled));
+	} while (!hook_is_enabled(h));
 
 	cp->no_stdin = 1;
 	strvec_pushv(&cp->env, hook_cb->options->env.v);
