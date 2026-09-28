@@ -23,6 +23,11 @@ hook.<friendly-name>.event::
 	the list of events, clearing any previously defined events for
 	`hook.<friendly-name>`. {see-git-hook}
 +
+The `proc-receive` event is special: its hook holds a conversation with
+'receive-pack' over its standard input and output, so at most one hook
+can be resolved for it. Configuring a `proc-receive` hook in addition to
+a `proc-receive` hook file makes the push fail with an error.
++
 The `<friendly-name>` must not be the same as a known hook event name
 (e.g. do not use `hook.pre-commit.event`). Using a known event name as
 a friendly-name is a fatal error because it creates an ambiguity with

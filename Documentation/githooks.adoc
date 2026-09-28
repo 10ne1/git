@@ -357,8 +357,13 @@ the relevant references and reporting the results back to 'receive-pack'.
 
 This hook executes once for the receive operation.  It takes no
 arguments, but uses a pkt-line format protocol to communicate with
-'receive-pack' to read commands, push-options and send results.  In the
-following example for the protocol, the letter 'S' stands for
+'receive-pack' to read commands, push-options and send results. Because
+that protocol is a conversation over the hook's stdin and stdout, only
+one 'proc-receive' hook can run: if both a hook file and a configured
+hook (see `hook.<friendly-name>.event` in linkgit:git-config[1]) are set
+up for this event, the push is rejected with an error.
+
+In the following example for the protocol, the letter 'S' stands for
 'receive-pack' and the letter 'H' stands for this hook.
 
     # Version and features negotiation.
