@@ -332,6 +332,52 @@ test_expect_success 'indicate no refs in v0 standards-compliant empty remote' '
 	test_expect_code 2 git ls-remote --exit-code --upload-pack=./cat-input .
 '
 
+# Run "ls-remote --show-object-format" with the given arguments over
+# protocol v0 and v2, and compare its output with "expect".
+test_show_object_format () {
+	for version in 0 2
+	do
+		git -c protocol.version=$version \
+			ls-remote --show-object-format "$@" >actual &&
+		test_cmp expect actual || return 1
+	done
+}
+
+test_expect_success 'ls-remote --show-object-format with empty sha1 remote' '
+	git init --bare --object-format=sha1 empty-sha1.git &&
+	echo sha1 >expect &&
+	test_show_object_format empty-sha1.git
+'
+
+test_expect_success 'ls-remote --show-object-format with empty sha256 remote' '
+	git init --bare --object-format=sha256 empty-sha256.git &&
+	echo sha256 >expect &&
+	test_show_object_format empty-sha256.git
+'
+
+test_expect_success 'ls-remote --show-object-format with sha1 remote' '
+	git init --object-format=sha1 repo-sha1 &&
+	test_commit -C repo-sha1 one &&
+	oid=$(git -C repo-sha1 rev-parse HEAD) &&
+	printf "sha1\n%s\tHEAD\n" "$oid" >expect &&
+	test_show_object_format repo-sha1 HEAD
+'
+
+test_expect_success 'ls-remote --show-object-format with sha256 remote' '
+	git init --object-format=sha256 repo-sha256 &&
+	test_commit -C repo-sha256 one &&
+	oid=$(git -C repo-sha256 rev-parse HEAD) &&
+	printf "sha256\n%s\tHEAD\n" "$oid" >expect &&
+	test_show_object_format repo-sha256 HEAD
+'
+
+test_expect_success 'ls-remote --show-object-format outside repository' '
+	nongit git init --bare --object-format=sha256 empty-nongit.git &&
+	echo sha256 >expect &&
+	nongit git ls-remote --show-object-format empty-nongit.git >actual &&
+	test_cmp expect actual
+'
+
 test_expect_success 'ls-remote works outside repository' '
 	# It is important for this repo to be inside the nongit
 	# area, as we want a repo name that does not include
